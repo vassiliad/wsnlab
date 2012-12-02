@@ -1,0 +1,286 @@
+#include "message.h"
+#include "wsnbroadcast.h"
+
+module WSNBroadcast2M
+{
+  provides {
+    interface WSNBroadcastC as Broadcast[uint8_t id];
+    interface SplitControl;
+  }
+
+  uses {
+    interface Random;
+    interface Packet;
+    interface AMPacket;
+    interface AMSend;
+    interface Receive as AMReceive;
+    interface SplitControl as AMControl;
+    interface Leds;
+
+    interface Timer<TMilli> as TmrSend;
+  }
+}
+implementation
+{
+  typedef struct {
+    uint16_t source;
+    uint8_t  seq;
+  } seq_t;
+
+  typedef nx_struct {
+    nx_uint8_t type;
+    nx_uint8_t id;
+    nx_uint8_t seq;
+    nx_uint16_t source;
+    nx_uint8_t hops;
+    nx_uint8_t max_hops;
+    nx_uint8_t data[WSN_MSG_SIZE];
+  } nx_broadcast_msg_t;
+
+  seq_t seqs[MAX_SEQ];
+  uint8_t queue_start=0,  queue_size=0;
+  uint8_t seq_write=0;
+  message_t queue[MAX_QUEUE];
+
+  uint8_t retransmits = 0;
+  uint8_t my_seq = 0;
+  uint8_t busy = FALSE;
+  task void sendNextBcast();
+
+  uint8_t seq_is_new(uint16_t neigh, uint16_t source, uint8_t seq)
+  {
+    uint8_t i;
+
+    for ( i=0; i<MAX_SEQ; i++ ) {
+      if ( seqs[i].source == source ) {
+        if ( seqs[i].seq < seq || ( seqs[i].seq==255 && seq<=5 ) || ( (int16_t)seqs[i].seq - (int16_t)seq > 15) ) {
+          dbg("BroadcastM", "had %d got %d set to %d for %d\n", seqs[i].seq, seq, (uint8_t)(seq), source);
+
+          seqs[i].seq = seq;
+          return TRUE;
+        } else {
+          return FALSE;
+        }
+      }
+    }
+
+    seqs[seq_write].source = source;
+    seqs[seq_write].seq = seq;
+
+    seq_write = (seq_write+1) % MAX_SEQ;
+    return TRUE;
+  }
+
+  error_t queue_push(void *data, uint8_t len, uint8_t id, uint16_t source, uint8_t seq, uint8_t hops, uint8_t max_hops)
+  {
+    uint8_t i, max, chosen, cur;
+    nx_uint8_t *t;
+
+    nx_broadcast_msg_t *msg;
+
+    if ( max_hops>0 && max_hops <= hops ) {
+      dbg("BlinkC", "************ Maximum hops!\n");
+      return SUCCESS;
+    }
+    
+    atomic {
+    if ( queue_size == MAX_QUEUE ) {
+      max = ( (nx_broadcast_msg_t*) call Packet.getPayload(queue, len+WSN_OVERHEAD) )->hops;
+        chosen = 0;
+
+        for ( i=1; i<queue_size; i++ ) {
+          cur = ( (nx_broadcast_msg_t*) call Packet.getPayload(queue+i, len+WSN_OVERHEAD) )->hops;
+          if ( cur > max ) {
+            max = cur;
+            chosen = i;
+          }
+        }
+        dbg("BroadcastM", "Using %d to store msg from %d\n", chosen, source);
+        msg = (nx_broadcast_msg_t*) call Packet.getPayload(queue+chosen, len+WSN_OVERHEAD);
+      } else {
+        dbg("BroadcastM", "Using %d to store msg from %d\n", queue_start, source);
+        msg = (nx_broadcast_msg_t*) call Packet.getPayload(queue+(queue_start+queue_size)%MAX_QUEUE, len+WSN_OVERHEAD);
+      }
+
+      t = (nx_uint8_t*) data;
+
+      call Packet.setPayloadLength(queue+(queue_start+queue_size)%MAX_QUEUE, len+WSN_OVERHEAD);
+      msg->type = WSN_SIGNATURE;
+      msg->id = id;
+      msg->source = source;
+      msg->seq = seq;
+      msg->hops = hops;
+      msg->max_hops = max_hops;
+
+      for ( i=0; i<len; i++ ) {
+        msg->data[i] = t[i];
+      }
+
+      if ( queue_size < MAX_QUEUE ) {
+        queue_size++;
+      }
+
+      if ( queue_size==1 )  {
+        call TmrSend.startOneShot((call Random.rand16()%150)+100);
+      }
+
+      dbg("BroadcastM","queue_push( %d, %d )\n", msg->source, len );
+
+      return SUCCESS;
+    }
+  }
+
+  /***************************************/
+
+  task void sendNextBcast()
+  {
+    if ( busy == TRUE )
+      return;
+    busy = TRUE;
+
+    if ( queue_size == 0 )
+      return;
+
+
+    // fix the size
+    if ( call AMSend.send(AM_BROADCAST_ADDR, queue+queue_start, 
+          call Packet.payloadLength(queue+queue_start)) == SUCCESS ) {
+      nx_broadcast_msg_t *msg = (nx_broadcast_msg_t*) call Packet.getPayload(queue+queue_start, call Packet.payloadLength(queue+queue_start));
+      dbg("BroadcastM", "sendNextBcast() success for %d\n", msg->source);
+      retransmits = 0;
+      busy = TRUE;
+
+    } else {
+      busy = FALSE;
+      dbg("BroadcastM", "sendNextBcast() failed(retransmits: %d) -- %d\n", retransmits, call Packet.payloadLength(queue+queue_start));
+      if ( ++retransmits <= 3 )
+        call TmrSend.startOneShot((call Random.rand16()%500)+100);
+      else
+        retransmits = 0;
+    }
+  }
+
+  event void TmrSend.fired()
+  {
+    post sendNextBcast();
+  }
+
+  command error_t SplitControl.start()
+  {
+    return call AMControl.start();
+  }
+
+  command error_t SplitControl.stop()
+  { 
+    return call AMControl.stop();
+  }
+
+  command error_t Broadcast.sendHops[uint8_t id](void *data, uint8_t len, uint8_t max_hops)
+  {
+    uint8_t seq;
+
+    if ( len > WSN_MSG_SIZE ) 
+      return ESIZE;
+
+    dbg("BroadcastM", "Sending (%d)-%d\n", id, call AMPacket.address());
+
+
+    if ( my_seq == 255 )
+      my_seq = 0;
+    else
+      my_seq++;
+
+    seq = my_seq;
+
+    return queue_push(data, len, id, call AMPacket.address(), seq, 0, max_hops);
+
+  }
+
+  command error_t Broadcast.send[uint8_t id](void *data, uint8_t len)
+  {
+    uint8_t seq;
+
+    if ( len > WSN_MSG_SIZE ) 
+      return ESIZE;
+
+    dbg("BroadcastM", "Sending (%d)-%d\n", id, call AMPacket.address());
+
+
+    if ( my_seq == 255 )
+      my_seq = 0;
+    else
+      my_seq++;
+
+    seq = my_seq;
+
+    return queue_push(data, len, id, call AMPacket.address(), seq, 0, 0);
+  }
+
+
+  /**************************************/
+  default event void Broadcast.receive[uint8_t id](nx_uint8_t *data, uint8_t len, uint16_t source, uint16_t last_hop, uint8_t hops) {}
+
+  event void AMSend.sendDone(message_t* msg, error_t error)
+  {
+    dbg("BroadcastM", "AMSend.sendDone\n");
+    busy = FALSE;
+
+    queue_start = (queue_start+1)%MAX_QUEUE;
+    queue_size--;
+
+    if ( queue_size )
+      call TmrSend.startOneShot(call Random.rand16()%150+100);
+  }
+
+  event message_t* AMReceive.receive(message_t* msg, void* payload, uint8_t len)
+  {
+    nx_broadcast_msg_t *bcast = (nx_broadcast_msg_t*) call Packet.getPayload(msg, len);
+
+
+    if ( len < WSN_OVERHEAD )
+      return msg;
+
+    if (  bcast->type != WSN_SIGNATURE )
+      return msg;
+
+    // filter my own msgs
+    if ( call AMPacket.address() == bcast->source )
+      return msg;
+
+    dbg("BroadcastM", "MSG: neigh(%d) src(%d) seq(%d) id(%d) len(%d)\n",
+        call AMPacket.source(msg), bcast->source, bcast->seq, bcast->id, len-WSN_OVERHEAD);
+
+    if ( seq_is_new(call AMPacket.source(msg), bcast->source, bcast->seq) == FALSE )
+      return msg;
+
+
+    queue_push(bcast->data, len-WSN_OVERHEAD, bcast->id, bcast->source, bcast->seq, bcast->hops+1, bcast->max_hops);
+
+    // should figure out another way
+    signal Broadcast.receive[bcast->id](bcast->data, len-WSN_OVERHEAD, bcast->source, call AMPacket.source(msg), bcast->hops);
+
+    return msg;
+  }
+
+
+  event void AMControl.startDone(error_t err)
+  {
+    uint8_t i;
+    signal SplitControl.startDone(err);
+    if ( err != SUCCESS )
+      return;
+
+
+    for ( i=0; i<MAX_SEQ; i++ ) {
+      seqs[i].source = AM_BROADCAST_ADDR;
+      seqs[i].seq = 0;
+    }
+
+  }
+
+  event void AMControl.stopDone(error_t err)
+  {
+    signal SplitControl.stopDone(err);
+  }
+}
+

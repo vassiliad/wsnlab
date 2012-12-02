@@ -1,0 +1,11 @@
+#ifndef _WSNBROADCAST_H
+#define _WSNBROADCAST_H
+
+#define MAX_QUEUE 20
+#define MAX_SEQ 20
+#define WSN_SIGNATURE 0x42
+#define WSN_OVERHEAD 7
+#define WSN_MSG_SIZE TOSH_DATA_LENGTH-WSN_OVERHEAD
+
+#endif
+
