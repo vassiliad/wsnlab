@@ -12,6 +12,7 @@ t = TOSSIM.Tossim([])
 r = t.radio()
 
 t.addChannel("BlinkC",sys.stdout);
+#t.addChannel("BlinkC_v", sys.stdout);
 #t.addChannel("BroadcastM",sys.stdout)
 
 nodes = Set([])
