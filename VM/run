@@ -11,34 +11,11 @@ from TOSSIM import *
 t = TOSSIM.Tossim([])
 r = t.radio()
 
-t.addChannel("BlinkC",sys.stdout);
-#t.addChannel("BlinkC_v", sys.stdout);
-#t.addChannel("BroadcastM",sys.stdout)
+t.addChannel("BlinkC",sys.stdout)
+t.addChannel("WSNVMM", sys.stdout)
 
-nodes = Set([])
-
-# m = t.getNode(0)
-# m.bootAtTime(1)
-
-f = open("topology.txt", "r")
-for line in f:
-	s = line.split()
-	if s:
-#		print " ", s[0], " ", s[1], " ", s[2];
-		r.add(int(s[0]), int(s[1]), float(s[2]))
-		if int(s[0]) not in nodes:
-			nodes.add(int(s[0]))
-		if int(s[1]) not in nodes:
-			nodes.add(int(s[1]) )
-
-
-for m in nodes:
-	node = t.getNode(int(m))
-	
-	for i in xrange(100):
-		node.addNoiseTraceReading(-100)
-	node.createNoiseModel();
-	node.bootAtTime( randint(1,10000 ) )
+node = t.getNode(0)
+node.bootAtTime( randint(1,10000 ) )
 
 while( 1 ) :
 	t.runNextEvent()
