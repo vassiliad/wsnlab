@@ -25,7 +25,6 @@ implementation
     uint8_t timer_active;
     uint8_t waiting;
     int8_t regs[MaxRegs];
-
     uint8_t init[255];
     uint8_t timer[255];
   } app_t;
@@ -39,34 +38,9 @@ implementation
 
   error_t app_set(int slot, nx_binary_t* binary, int id);
   void binary_to_handlers(nx_binary_t *binary, uint8_t* init, uint8_t *timer);
-  // uint8_t binary_to_instruction(nx_uint8_t* binary, instruction_t *instr);
   task void next_instruction();
 
-  /* uint8_t binary_to_instruction(nx_uint8_t* binary, instruction_t *instr)
-     {
-     uint8_t opcode = binary[0];
-     uint8_t arg2   = binary[1];
-
-     instr->opcode = opcode;
-
-     dbg("BlinkC", "Op: %X (%X)\n", (opcode&0xf0), opcode);
-     opcode = (opcode&0xf0);
-
-     switch( opcode ) {
-     case 0x00:
-     case 0x50:
-     case 0x60:
-     case 0xC0:
-     case 0xD0:
-     return 1;
-
-     default:
-     instr->arg2 = arg2;
-     return 2;
-     }
-     } */
-
-  void binary_to_handlers(nx_binary_t *binary, uint8_t *init, uint8_t *timer)	{
+  void binary_to_handlers(nx_binary_t *binary, uint8_t *init, uint8_t *timer) {
     uint8_t i;
 
     nx_uint8_t *p;
@@ -126,10 +100,8 @@ implementation
 
     app_t *p = apps + active_vm;
 
-
     if ( active_vm == MaxApps )
       return;
-
 
     if ( p->in_init )
       instr = p->init + p->pc;
@@ -351,6 +323,13 @@ implementation
 
   command error_t VM.start_application(uint8_t id)
   {
+    uint8_t i;
+
+    for ( i=0; i<MaxApps; i++ ) {
+      if ( apps[i].is_active && apps[i].id == id ) {
+        apps[i].is_active = 1;
+      }
+    }
   }
 
 }
