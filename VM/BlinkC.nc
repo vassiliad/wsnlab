@@ -69,8 +69,8 @@ implementation
 	
 	event void Boot.booted()
 	{
-		call VM.upload_binary(app2, 2);
-		call VM.upload_binary(app2, 1);
+/*		call VM.upload_binary(app2, 2);
+		call VM.upload_binary(app2, 1); */
 		call VM.upload_binary(app3, 0);
 
 	}

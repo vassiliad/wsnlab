@@ -49,6 +49,9 @@ implementation
   event void Read.readDone( error_t result, uint16_t val )
 	{
 		uint8_t i, last;
+		
+		if ( val > 127 )
+			val = 127;
 
 		cache_time = call Timer.getNow[0]();
 		cache_value = val;
@@ -58,6 +61,7 @@ implementation
 		for ( i=0; i<MaxApps; ++i ) {
 			if ( apps[i].is_active && apps[i].waiting ) {
 				apps[i].regs[ apps[i].waiting -1] = val;
+				dbg("WSNVMM_v", "app[%d].r%d = %d\n", i, apps[i].waiting, apps[i].regs[apps[i].waiting-1]);
 				apps[i].waiting = 0;
 				last = i;
 			}
@@ -79,14 +83,12 @@ implementation
 
 			if ( now - cache_time <= CacheLifetime ) {
 				apps[id].regs[apps[id].waiting-1] = cache_value;
+
+				dbg("WSNVMM_v", "app[%d].r%d = %d\n", id, apps[id].waiting, apps[id].regs[apps[id].waiting-1]);
 				apps[id].waiting = 0;
 
 				if ( active_vm == MaxApps ) {
-					for ( i=0; i<MaxApps; ++i )
-						if ( apps[i].id == id ) {
-							active_vm = i;
-							break;
-						}
+					active_vm = id;
 					post next_instruction();
 				}
 
@@ -189,8 +191,8 @@ implementation
 			case 0x10:
 				i = instr[0] & 0x0f;
 
-				if ( i>0 && i < MaxRegs ) {
-					p->regs[i] = (int8_t) instr[1];
+				if ( i>0 && i <= MaxRegs ) {
+					p->regs[i-1] = (int8_t) instr[1];
 					(p->pc)+=2;
 				}
 
@@ -201,8 +203,8 @@ implementation
 
 			case 0x20:
 				i = instr[0] & 0x0f;
-				if ( i > 0 && i < MaxRegs 
-						&& instr[1] < MaxRegs  && instr[1] > 0 ) {
+				if ( i > 0 && i <= MaxRegs 
+						&& instr[1] <= MaxRegs  && instr[1] > 0 ) {
 					p->regs[i-1] = p->regs[instr[1]-1];
 					(p->pc)+=2;
 				}
@@ -213,8 +215,8 @@ implementation
 
 			case 0x30:
 				i = instr[0] & 0x0f;
-				if ( i > 0 && i < MaxRegs 
-						&& instr[1]>0 && instr[1] < MaxRegs ) {
+				if ( i > 0 && i <= MaxRegs 
+						&& instr[1]>0 && instr[1] <= MaxRegs ) {
 					(p->regs[i-1]) += p->regs[instr[1]-1];
 					(p->pc)+=2;
 				}
@@ -230,12 +232,12 @@ implementation
 					(p->pc)+=2;
 				}
 
-				dbg("WSNVMM_v", "Sub r%d, r%d\n", i, instr[1]);
+				dbg("WSNVMM_v", "Sub r%d, r%d -> %d\n", i, instr[1], p->regs[i-1]);
 				break;
 
 			case 0x50:
 				i = instr[0] & 0x0f;
-				if ( i > 0 && i < MaxRegs ) {
+				if ( i > 0 && i <= MaxRegs ) {
 					(p->regs[i-1])++;
 				}
 				(p->pc)++;
@@ -245,7 +247,7 @@ implementation
 
 			case 0x60:
 				i = instr[0] & 0x0f;
-				if ( i > 0 && i < MaxRegs ) {
+				if ( i > 0 && i <= MaxRegs ) {
 					(p->regs[i-1])--;
 				}
 				(p->pc)++;
@@ -255,8 +257,8 @@ implementation
 
 			case 0x70:
 				i = instr[0] & 0x0f;
-				if ( i > 0 && i < MaxRegs 
-						&& instr[1] > 0 && instr[1] < MaxRegs ) {
+				if ( i > 0 && i <= MaxRegs 
+						&& instr[1] > 0 && instr[1] <= MaxRegs ) {
 					(p->regs[i-1]) = p->regs[instr[1]-1] > p->regs[i-1] ?
 						p->regs[instr[1]-1] : p->regs[i-1];
 					(p->pc)+=2;
@@ -268,8 +270,8 @@ implementation
 
 			case 0x80:
 				i = instr[0] & 0x0f;
-				if ( i > 0 && i < MaxRegs 
-						&& instr[1] > 0 &&  instr[1] < MaxRegs ) {
+				if ( i > 0 && i <= MaxRegs 
+						&& instr[1] > 0 &&  instr[1] <= MaxRegs ) {
 					(p->regs[i-1]) = p->regs[instr[1]-1] < p->regs[i-1] ?
 						p->regs[instr[1]-1] : p->regs[i-1];
 					(p->pc)+=2;
@@ -281,7 +283,7 @@ implementation
 			case 0x90:
 				i = instr[0] & 0x0f;
 				(p->pc)++;
-				if ( p->regs[i] > 0 ) {
+				if ( p->regs[i-1] > 0 ) {
 					p->pc += (int8_t)instr[1];
 				} else {
 					(p->pc)++;
@@ -293,7 +295,7 @@ implementation
 			case 0xA0:
 				i = instr[0] & 0x0f;
 				(p->pc)++;
-				if ( p->regs[i] == 0 ) {
+				if ( p->regs[i-1] == 0 ) {
 					p->pc += (int8_t)instr[1];
 				} else {
 					(p->pc)++;
@@ -303,7 +305,7 @@ implementation
 				break;
 
 			case 0xB0:
-				(p->pc) += 2 + (int8_t) instr[1];
+				(p->pc) += (int8_t) instr[1];
 				dbg("WSNVMM_v", "bra %d\n", (int8_t) instr[1]);
 
 				break;
@@ -325,7 +327,7 @@ implementation
 				dbg("WSNVMM_v", "Tmr: %d\n", instr[1]);
 
 				p->timer_set=1;
-				call Timer.startOneShot[active_vm](instr[1]);
+				call Timer.startOneShot[active_vm](instr[1]*1000);
 				(p->pc)+=2;
 				break;
 		}
