@@ -191,7 +191,7 @@ implementation
 			case 0x10:
 				i = instr[0] & 0x0f;
 
-				if ( i>0 && i <= MaxRegs ) {
+				if ( i>0 && i < MaxRegs ) {
 					p->regs[i-1] = (int8_t) instr[1];
 					(p->pc)+=2;
 				}
