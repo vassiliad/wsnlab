@@ -9,7 +9,7 @@ module WSNSerialM
 }
 implementation
 {
-  enum Config { QueueSize=30, MsgSize=20, Buffers=5 };
+  enum Config { QueueSize=30, MsgSize=20, Buffers=50 };
   enum BufferState { Free, Taken };
 
   char buffers[Buffers][MsgSize];
@@ -23,6 +23,8 @@ implementation
   char msgs_queue[QueueSize][MsgSize];
   message_t packet;
 
+  task void printNextMsg();
+
   command uint8_t WSNSerialC.get_buf()
   {
     uint8_t i;
@@ -35,12 +37,11 @@ implementation
     
     return 0;
   }
-
-  task void printNextMsg()
-  {
+  
+  void sendmsg() {
     uint8_t *p, i, len;
     nx_uint8_t* q;
-    
+      
     if ( busy == TRUE )
       return;
 
@@ -68,14 +69,20 @@ implementation
       q[i] = p[i];
 
     if ( call SSend.send(AM_BROADCAST_ADDR,&packet,  len) == SUCCESS ) {
-      dbg("WSNSerialM", "[%d]Sending[SUCCESS]: %s\n",msgs, p);
+      dbg("WSNSerialM", "# %s\n", p);
     } else {
       busy = FALSE;
-      dbg("WSNSerialM", "[%d]Sending[FAIL   ]: %s\n",msgs, p);
+      dbg("WSNSerialM", "$ %s\n", p);
 
       if ( msgs )
         post printNextMsg();
     }
+
+  }
+
+  task void printNextMsg()
+  {
+    sendmsg(); 
   }
 
   command void WSNSerialC.print_buf(uint8_t id)
@@ -87,6 +94,8 @@ implementation
     if ( id ==0 || id > Buffers )
       return;
     
+    buffers_state[id-1] = Free;
+    buffers_size[id-1]  = 0;
     len = strlen(buffers[id-1]);
     
     if ( len == 0 )
@@ -103,10 +112,7 @@ implementation
     p[i] = 0;
     
     
-    buffers_state[id-1] = Free;
-    buffers_size[id-1]  = 0;
-    
-    post printNextMsg();
+    sendmsg();
   }
 
   command void WSNSerialC.print_str(uint8_t id, char *str)
@@ -142,13 +148,18 @@ implementation
     p = buffers[id-1] + buffers_size[id-1];
 
     steps = 0;
+    
+    if ( integer>0 ) {
+      while ( integer ) {
+        i = integer / 10;
+        j = integer % 10;
 
-    while ( integer ) {
-      i = integer / 10;
-      j = integer % 10;
-
-      integer =  i;
-      temp[steps++] = j+'0';
+        integer =  i;
+        temp[steps++] = j+'0';
+      }
+    } else {
+      temp[0] = '0';
+      steps = 1;
     }
 
     for ( i=0; i<steps; ++i ) 
@@ -194,7 +205,7 @@ implementation
     busy = FALSE;
 
     if ( msgs )
-      post printNextMsg();
+      sendmsg();
   }
 
   event message_t *SRecv.receive(message_t* msg, void* payload, uint8_t len) {

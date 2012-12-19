@@ -12,8 +12,9 @@ t = TOSSIM.Tossim([])
 r = t.radio()
 
 t.addChannel("BlinkC",sys.stdout)
-t.addChannel("WSNVMM", sys.stdout)
-t.addChannel("WSNVMM_v", sys.stdout)
+#t.addChannel("WSNVMM", sys.stdout)
+#t.addChannel("WSNVMM_v", sys.stdout)
+t.addChannel("WSNSerialM", sys.stdout)
 
 node = t.getNode(0)
 node.bootAtTime( randint(1,10000 ) )

@@ -1,3 +1,4 @@
 COMPONENT=BlinkAppC
-CFLAGS+=-I../modules/WSNVM
+CFLAGS+=-I../modules/WSNSerial -I../modules/WSNVM -DTOSH_DATA_LENGTH=128
+SENSORBOARD ?= im2sb
 include $(MAKERULES)
