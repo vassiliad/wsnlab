@@ -1,0 +1,24 @@
+#!/usr/bin/python
+import TOSSIM
+import sys
+import random
+import sets
+
+from random import randint
+from sets import Set
+from TOSSIM import *
+
+t = TOSSIM.Tossim([])
+r = t.radio()
+
+t.addChannel("BlinkC",sys.stdout)
+t.addChannel("WSNVMM", sys.stdout)
+t.addChannel("WSNVMM_v", sys.stdout)
+t.addChannel("WSNSerialM", sys.stdout)
+
+node = t.getNode(0)
+node.bootAtTime( randint(1,10000 ) )
+
+while( 1 ) :
+	t.runNextEvent()
+
