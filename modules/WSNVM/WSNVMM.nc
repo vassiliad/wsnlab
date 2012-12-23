@@ -219,11 +219,15 @@ implementation
 
     dbg("WSNVMM", "Executing for %d:%d (%x)\n", active_vm, p->pc, instr[0] & 0xF0);
 
-
+    buf = call Serial.get_buf();
+    call Serial.print_str(buf, "PC ");
+    call Serial.print_int(buf, p->pc);
+    call Serial.print_str(buf, " ");
+ 
     switch ( instr[0] & 0xF0 ) {
       case 0x00:
         dbg("WSNVMM_v", "Ret\n");
-        buf = call Serial.get_buf();
+//        buf = call Serial.get_buf();
         call Serial.print_str(buf, "Ret");
         call Serial.print_buf(buf);
 
@@ -250,7 +254,7 @@ implementation
         }
 
         dbg("WSNVMM_v", "Set r%d:=%d\n", i, (int8_t) instr[1]);
-        buf = call Serial.get_buf();
+//        buf = call Serial.get_buf();
         call Serial.print_str(buf, "Set r");
         call Serial.print_int(buf, i);
         call Serial.print_str(buf, ":=");
@@ -276,7 +280,7 @@ implementation
 
         dbg("WSNVMM_v", "Cpy r%d, r%d\n", i, instr[1]);
 
-        buf = call Serial.get_buf();
+//        buf = call Serial.get_buf();
         call Serial.print_str(buf, "Cp r");
         call Serial.print_int(buf, i);
         call Serial.print_str(buf, ":=r");
@@ -303,7 +307,7 @@ implementation
         }
 
         dbg("WSNVMM_v", "Add r%d, r%d\n", i, instr[1]);
-        buf = call Serial.get_buf();
+ //       buf = call Serial.get_buf();
         call Serial.print_str(buf, "Add r");
         call Serial.print_int(buf, i);
         call Serial.print_str(buf, ":=r");
@@ -331,7 +335,7 @@ implementation
 
 
         dbg("WSNVMM_v", "Sub r%d, r%d -> %d\n", i, instr[1], p->regs[i-1]);
-        buf = call Serial.get_buf();
+   //     buf = call Serial.get_buf();
         call Serial.print_str(buf, "Sub r");
         call Serial.print_int(buf, i);
         call Serial.print_str(buf, ":=r");
@@ -358,7 +362,7 @@ implementation
         (p->pc)++;
 
         dbg("WSNVMM_v", "Inc r%d\n", i);
-        buf = call Serial.get_buf();
+//        buf = call Serial.get_buf();
         call Serial.print_str(buf, "Inc r");
         call Serial.print_int(buf, i);
 
@@ -383,7 +387,7 @@ implementation
 
         dbg("WSNVMM_v", "Dec r%d\n", i);
 
-        buf = call Serial.get_buf();
+//        buf = call Serial.get_buf();
         call Serial.print_str(buf, "Dec r");
         call Serial.print_int(buf, i);
 
@@ -409,7 +413,7 @@ implementation
         }
 
         dbg("WSNVMM_v", "Max r%d, r%d\n", i, instr[1]);
-        buf = call Serial.get_buf();
+//        buf = call Serial.get_buf();
         call Serial.print_str(buf, "Max r");
         call Serial.print_int(buf, i);
         call Serial.print_str(buf, ":=r");
@@ -437,7 +441,7 @@ implementation
         }
 
         dbg("WSNVMM_v", "Min r%d, r%d\n", i, instr[1]);
-        buf = call Serial.get_buf();
+//        buf = call Serial.get_buf();
         call Serial.print_str(buf, "Min r");
         call Serial.print_int(buf, i);
         call Serial.print_str(buf, ":=r");
@@ -462,7 +466,7 @@ implementation
           (p->pc)++;
         }
         dbg("WSNVMM_v", "bgz r%d, %d\n", i, (int8_t) instr[1]);
-        buf = call Serial.get_buf();
+//        buf = call Serial.get_buf();
         call Serial.print_str(buf, "Bgz r");
         call Serial.print_int(buf, i);
         call Serial.print_str(buf, ",");
@@ -488,7 +492,7 @@ implementation
         }
         dbg("WSNVMM_v", "bez r%d, %d\n", i, (int8_t) instr[1]);
 
-        buf = call Serial.get_buf();
+//        buf = call Serial.get_buf();
         call Serial.print_str(buf, "Bez r");
         call Serial.print_int(buf, i);
         call Serial.print_str(buf, ",");
@@ -506,7 +510,7 @@ implementation
       case 0xB0:
         (p->pc) += 1 + (int8_t) instr[1];
         dbg("WSNVMM_v", "bra %d\n", (int8_t) instr[1]);
-        buf = call Serial.get_buf();
+//        buf = call Serial.get_buf();
         call Serial.print_str(buf, "Bra ");
 
          if ( instr[1] >= 0 ) {
@@ -522,7 +526,7 @@ implementation
 
       case 0xC0:
         dbg("WSNVMM_v", "Led: %d\n",  instr[0]&0x0f);
-        buf = call Serial.get_buf();
+//        buf = call Serial.get_buf();
         call Serial.print_str(buf, "Led ");
         call Serial.print_int(buf, instr[0]&0x0f);
         call Serial.print_buf(buf);
@@ -563,7 +567,7 @@ implementation
       case 0xD0:
         i = instr[0] & 0x0f;
         dbg("WSNVMM_v", "Rdb: r%d\n", i);
-        buf = call Serial.get_buf();
+//        buf = call Serial.get_buf();
         call Serial.print_str(buf, "Rdb ");
         call Serial.print_int(buf, i);
         call Serial.print_buf(buf);
@@ -574,7 +578,7 @@ apps[active_vm].waiting = i;
 
       case 0xE0:
         dbg("WSNVMM_v", "Tmr: %d\n", instr[1]);
-        buf = call Serial.get_buf();
+//        buf = call Serial.get_buf();
         call Serial.print_str(buf, "Tmr ");
         call Serial.print_int(buf, instr[1]);
         call Serial.print_buf(buf);
