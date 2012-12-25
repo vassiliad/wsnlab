@@ -84,7 +84,7 @@ implementation
     if ( err != SUCCESS )
       call Control.start();
     else
-      call VM.upload_binary(app2, 0);
+      call VM.upload_binary(app2, 0, TOS_NODE_ID);
   }
 
 

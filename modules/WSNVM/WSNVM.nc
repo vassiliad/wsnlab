@@ -9,10 +9,15 @@ implementation
 	components new TimerMilliC() as Timer1;
 	components new TimerMilliC() as Timer2;
   components new DemoSensorC() as Sensor;
+	components ActiveMessageC;
+	components WSNBroadcast;
 	components WSNVMM;
   components WSNSerial;
   components LedsC;
-
+	
+	WSNVMM.AMPacket -> ActiveMessageC;
+	WSNVMM.BroadcastControl -> WSNBroadcast.SplitControl;
+	WSNVMM.Broadcast -> WSNBroadcast.WSNBroadcastC[42];
   WSNVMM.Leds -> LedsC;
 	WSNVMM.Read -> Sensor;
   WSNVMM.Timer[0] -> Timer0;

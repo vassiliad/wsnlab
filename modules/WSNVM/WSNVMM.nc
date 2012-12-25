@@ -4,13 +4,22 @@ module WSNVMM
   uses interface Leds;
   uses interface Read<uint16_t>;
   uses interface WSNSerialC as Serial;
-  provides interface SplitControl as Control;
   uses interface SplitControl as SControl;
+	uses interface WSNBroadcastC as Broadcast;
+	uses interface SplitControl as BroadcastControl;
+	uses interface AMPacket;
+	
+  provides interface SplitControl as Control;
   provides interface WSNVMC as VM;
 }
 implementation
 {
-  enum {MaxApps=3, MaxRegs=6, CacheLifetime=3000};
+  enum {MaxApps=3, MaxRegs=6, CacheLifetime=3000, MaxRoutes=15};
+	
+	typedef struct {
+		uint16_t node;
+		uint16_t hop;
+	} route_t;
 
   typedef nx_struct {
     nx_uint8_t length;
@@ -20,6 +29,7 @@ implementation
   } nx_binary_t;
 
   typedef struct {
+		uint16_t sink;
     uint8_t pc;
     uint8_t is_active;
     uint8_t in_init;
@@ -42,13 +52,54 @@ implementation
   uint16_t cache_value;
   uint32_t cache_time=0;
   uint8_t  cache_valid=0;
+	
+	route_t routes[MaxRoutes];
+	uint8_t routes_start=0, routes_size=0;
 
 
-  error_t app_set(int slot, nx_binary_t* binary, int id);
+	error_t bcastControl=EBUSY, serialControl=EBUSY;
+
+  error_t app_set(int slot, nx_binary_t* binary, int id, uint16_t sink);
   void binary_to_handlers(nx_binary_t *binary, uint8_t* init, 
       uint8_t *timer);
   task void next_instruction();
   void request_sense_data(int id);
+
+// Routes
+	void route_add(uint16_t node, uint16_t hop)
+	{
+		uint8_t p;
+
+		p = (routes_start+routes_size)%MaxRoutes;
+
+		if ( routes_size == MaxRoutes ) {
+			routes_start ++; // eat up the oldest entry
+		} else {
+			routes_size++;
+		}
+
+		routes[p].node = node;
+		routes[p].hop  = hop;
+	}
+
+	error_t route_get(uint16_t node, uint16_t *hop) {
+		uint8_t i;
+
+		for ( i=0; i<routes_size; ++i ) {
+			if ( routes[ (i+routes_start)%MaxRoutes ].node == node ) {
+				*hop = routes[ (i+routes_start)%MaxRoutes ].hop;
+				return SUCCESS;
+			}
+		}
+
+		return FAIL;
+	}
+
+  event void Broadcast.receive(nx_uint8_t *data, uint8_t len,
+				uint16_t source, uint16_t last_hop, uint8_t hops)
+	{
+
+	}
 
   command error_t Control.start()
   {
@@ -58,22 +109,36 @@ implementation
       apps[i].stopped = 0;
     }
 
-    return call SControl.start();
+    return call SControl.start() & call BroadcastControl.start();
   }
 
   command error_t Control.stop()
   {
-    return call SControl.stop();
+    return call SControl.stop() & call BroadcastControl.stop();
+  }
+
+  event void BroadcastControl.stopDone(error_t err) {
+		bcastControl = err;
+		if ( serialControl != EBUSY )
+	    signal Control.stopDone(serialControl|bcastControl);
+  }
+
+  event void BroadcastControl.startDone(error_t err) {
+		bcastControl = err;
+		if ( serialControl != EBUSY )
+	    signal Control.startDone(serialControl | bcastControl);
   }
 
   event void SControl.stopDone(error_t err) {
-    signal Control.stopDone(err);
+		serialControl = err;
+		if ( bcastControl != EBUSY )
+	    signal Control.stopDone(err|bcastControl);
   }
 
   event void SControl.startDone(error_t err) {
-    if ( err != SUCCESS )
-      call SControl.start();
-    signal Control.startDone(err);
+		serialControl = err;
+		if ( bcastControl != EBUSY )
+	    signal Control.startDone(err | bcastControl);
   }
 
 
@@ -85,7 +150,8 @@ implementation
     id = ((nx_uint8_t*)payload)[1];
 
     if ( action == 0 ) {
-      call VM.upload_binary((nx_uint8_t*) payload+2, id);
+      call VM.upload_binary((nx_uint8_t*) payload+2, id
+					, call AMPacket.address() );
     } else if ( action == 1 )
       call VM.stop_application(id);
     else if ( action == 2 )
@@ -169,7 +235,7 @@ implementation
     dbg("WSNVMM", "Done loading\n");
   }
 
-  error_t app_set(int slot, nx_binary_t* binary, int id)
+  error_t app_set(int slot, nx_binary_t* binary, int id, uint16_t sink)
   {
     app_t *p = apps + slot;
     uint8_t j;
@@ -178,6 +244,7 @@ implementation
       return ENOMEM;
     }
 
+		p->sink = sink;
     p->is_active = 0;
     p->pc = 0;
     p->id = id;
@@ -618,7 +685,7 @@ apps[active_vm].waiting = i;
     }
   }
 
-  command error_t VM.upload_binary(void *binary, uint8_t id)
+  command error_t VM.upload_binary(void *binary, uint8_t id, uint16_t sink)
   {
     uint8_t i, slot;
 
@@ -627,14 +694,14 @@ apps[active_vm].waiting = i;
     for ( i=0; i<MaxApps; i++ )
       if ( apps[i].is_active && apps[i].id == id ) {
         apps[i].is_active = 0;
-        return app_set(i, (nx_binary_t*)binary, id);
+        return app_set(i, (nx_binary_t*)binary, id, sink);
       } else if ( apps[i].is_active == 0 )
         slot = i;
 
     if ( slot == MaxApps )
       return ENOMEM;
-
-    return app_set(slot, (nx_binary_t*)binary, id);
+		
+    return app_set(slot, (nx_binary_t*)binary, id, sink);
   }
 
   command error_t VM.stop_application(uint8_t id)
