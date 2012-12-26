@@ -13,11 +13,39 @@ r = t.radio()
 
 t.addChannel("BlinkC",sys.stdout)
 #t.addChannel("WSNVMM", sys.stdout)
-#t.addChannel("WSNVMM_v", sys.stdout)
 t.addChannel("WSNSerialM", sys.stdout)
+#t.addChannel("WSNVMM_v", sys.stdout)
 
-node = t.getNode(0)
-node.bootAtTime( randint(1,10000 ) )
+
+#t.addChannel("BroadcastM",sys.stdout)
+
+#t.addChannel("QueryM_v", sys.stdout)
+#t.addChannel("QueryM", sys.stdout)
+
+nodes = Set([])
+
+# m = t.getNode(0)
+# m.bootAtTime(1)
+
+f = open("topology.txt", "r")
+for line in f:
+	s = line.split()
+	if s:
+#		print " ", s[0], " ", s[1], " ", s[2];
+		r.add(int(s[0]), int(s[1]), 0.0)
+		if int(s[0]) not in nodes:
+			nodes.add(int(s[0]))
+		if int(s[1]) not in nodes:
+			nodes.add(int(s[1]) )
+
+
+for m in nodes:
+	node = t.getNode(int(m))
+	
+	for i in xrange(100):
+		node.addNoiseTraceReading(-100)
+	node.createNoiseModel();
+	node.bootAtTime( randint(1,100000 ) )
 
 while( 1 ) :
 	t.runNextEvent()
