@@ -111,8 +111,7 @@ implementation
       p[i] = buffers[id-1][i];
     p[i] = 0;
     
-    
-    sendmsg();
+    post printNextMsg();
   }
 
   command void WSNSerialC.print_str(uint8_t id, char *str)
@@ -205,7 +204,7 @@ implementation
     busy = FALSE;
 
     if ( msgs )
-      sendmsg();
+			post printNextMsg();
   }
 
   event message_t *SRecv.receive(message_t* msg, void* payload, uint8_t len) {

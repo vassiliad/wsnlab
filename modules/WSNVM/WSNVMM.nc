@@ -15,6 +15,7 @@ module WSNVMM
 implementation
 {
 	enum {MaxApps=3, MaxRegs=10, CacheLifetime=3000, MaxRoutes=15};
+	enum {NewApp=12};
 
 	typedef struct {
 		uint16_t node;
@@ -25,8 +26,16 @@ implementation
 		nx_uint8_t length;
 		nx_uint8_t length_init;
 		nx_uint8_t length_timer;
-		nx_uint8_t payload[];
+		nx_uint8_t length_net;
+		nx_uint8_t payload[255];
 	} nx_binary_t;
+
+
+	typedef nx_struct {
+		nx_uint8_t guard;
+		nx_uint8_t id;
+		nx_binary_t binary;
+	} nx_new_app_t;
 
 	typedef struct {
 		uint16_t sink;
@@ -40,6 +49,7 @@ implementation
 		int8_t regs[MaxRegs];
 		uint8_t init[255];
 		uint8_t timer[255];
+		uint8_t net[255];
 		uint8_t stopped;
 	} app_t;
 
@@ -61,7 +71,7 @@ implementation
 
 	error_t app_set(int slot, nx_binary_t* binary, int id, uint16_t sink);
 	void binary_to_handlers(nx_binary_t *binary, uint8_t* init, 
-			uint8_t *timer);
+			uint8_t *timer, uint8_t *net);
 	task void next_instruction();
 	void request_sense_data(int id);
 
@@ -107,7 +117,27 @@ implementation
 	event void Broadcast.receive(nx_uint8_t *data, uint8_t len,
 			uint16_t source, uint16_t last_hop, uint8_t hops)
 	{
+		nx_new_app_t *p = ( nx_new_app_t*) data;
+		uint8_t buf;
 
+		if ( len > 2+4 && p->guard == NewApp ) {
+			buf = call Serial.get_buf();
+			call Serial.print_str(buf,"NewApp::size=");
+			call Serial.print_int(buf, len);
+			call Serial.print_str(buf, ",init=");
+			call Serial.print_int(buf, p->binary.length_init);
+			call Serial.print_str(buf, ",timer=");
+			call Serial.print_int(buf, p->binary.length_timer);
+			call Serial.print_str(buf, ",net=");
+			call Serial.print_int(buf, p->binary.length_net);
+			call Serial.print_str(buf,"\tid:");
+			call Serial.print_int(buf, p->id);
+			call Serial.print_str(buf, ", sink:");
+			call Serial.print_int(buf, (uint8_t)source);
+			call Serial.print_buf(buf);
+
+			call VM.upload_binary(&(p->binary), p->id, source);
+		}
 	}
 
 	command error_t Control.start()
@@ -150,17 +180,36 @@ implementation
 			signal Control.startDone(err | bcastControl);
 	}
 
+	command error_t VM.propagate_binary(void *binary, uint8_t len,
+			uint8_t id)
+	{
+		uint8_t i;
+		nx_new_app_t app;
+
+		app.guard = NewApp;
+		app.id = id;
+		app.binary = *((nx_binary_t*)binary);
+
+		for ( i=0; i<len; ++i)
+			app.binary.payload[i] = ((nx_binary_t*)binary)->payload[i];
+
+		call VM.upload_binary((nx_uint8_t*)binary, id
+				,call AMPacket.address() );
+		call Broadcast.send(&app, len+2);
+	}
 
 
 	event void Serial.receive(void* payload, uint8_t len) {
+		nx_binary_t  *bin;
 		nx_uint8_t action, id;
 
 		action = ((nx_uint8_t*)payload)[0];
 		id = ((nx_uint8_t*)payload)[1];
 
+		bin = (nx_binary_t*)((nx_uint8_t*)payload+2);
+
 		if ( action == 0 ) {
-			call VM.upload_binary((nx_uint8_t*) payload+2, id
-					, call AMPacket.address() );
+			call VM.propagate_binary(bin, len, id);
 		} else if ( action == 1 )
 			call VM.stop_application(id);
 		else if ( action == 2 )
@@ -183,7 +232,6 @@ implementation
 		for ( i=0; i<MaxApps; ++i ) {
 			if ( apps[i].is_active && apps[i].waiting ) {
 				apps[i].regs[ apps[i].waiting -1] = val;
-				// dbg("WSNVMM_v", "app[%d].r%d = %d\n", i, apps[i].waiting, apps[i].regs[apps[i].waiting-1]);
 				apps[i].waiting = 0;
 				last = i;
 			}
@@ -191,6 +239,7 @@ implementation
 
 		if ( active_vm == MaxApps ) {
 			active_vm = last;
+
 			post next_instruction();
 		}
 	}
@@ -205,14 +254,14 @@ implementation
 			if ( now - cache_time <= CacheLifetime ) {
 				apps[id].regs[apps[id].waiting-1] = cache_value;
 
-				dbg("WSNVMM_v", "app[%d].r%d = %d\n", id, apps[id].waiting, apps[id].regs[apps[id].waiting-1]);
+				dbg("WSNVMM_v", "app[%d].r%d = %d\n", id, apps[id].waiting
+						, apps[id].regs[apps[id].waiting-1]);
 				apps[id].waiting = 0;
 
 				if ( active_vm == MaxApps ) {
 					active_vm = id;
 					post next_instruction();
-				}
-
+				} 
 				return;
 			} 
 		}
@@ -221,17 +270,18 @@ implementation
 	}
 
 	void binary_to_handlers(nx_binary_t *binary, uint8_t *init, 
-			uint8_t *timer)
+			uint8_t *timer, uint8_t *net)
 	{
 		uint8_t i;
 
 		nx_uint8_t *p;
 
 		dbg("WSNVMM", "size: %d\n", binary->length);
-		dbg("WSNVMM", "init_size: %d\n", binary->length_init);
+		dbg("WSNVMM", "init_size:  %d\n", binary->length_init);
 		dbg("WSNVMM", "timer_size: %d\n", binary->length_timer);
+		dbg("WSNVMM", "timer_net:  %d\n", binary->length_net);
 
-		p = ( (nx_uint8_t*) binary ) + 3;
+		p = ( (nx_uint8_t*) binary ) + 4;
 
 		dbg("WSNVMM", "Init:\n");
 		for ( i=0; i<binary->length_init; ++i, ++p ) 
@@ -240,6 +290,10 @@ implementation
 		dbg("WSNVMM", "Timer\n");
 		for ( i=0; i<binary->length_timer; ++i, ++p )
 			timer[i] = *p;
+
+		dbg("WSNVMM", "Net\n");
+		for ( i=0; i<binary->length_net; ++i, ++p )
+			net[i] = *p;
 
 		dbg("WSNVMM", "Done loading\n");
 	}
@@ -253,6 +307,8 @@ implementation
 			return ENOMEM;
 		}
 
+		dbg("BlinkC", "sink is %d\n", sink);
+
 		p->sink = sink;
 		p->is_active = 0;
 		p->pc = 0;
@@ -261,13 +317,12 @@ implementation
 		p->timer_set=0;
 		p->timer_active=0;
 		p->waiting = 0;
-		binary_to_handlers(binary, p->init, p->timer);
+		binary_to_handlers(binary, p->init, p->timer, p->net);
 
 		for ( j=0; j<MaxRegs; ++j )
 			p->regs[j] = 0;
 
 		p->is_active = 1;
-
 
 		if ( active_vm == MaxApps ) {
 			active_vm = slot;
@@ -293,10 +348,11 @@ implementation
 		else
 			instr = p->timer + p->pc;
 
-		dbg("WSNVMM", "Executing for %d:%d (%x)\n", active_vm, p->pc, instr[0] & 0xF0);
+		dbg("WSNVMM", "Executing for %d:%d (%x)\n", 
+				active_vm, p->pc, instr[0] & 0xF0);
 
 		buf = call Serial.get_buf();
-		
+
 		call Serial.print_int(buf, p->sink);
 		call Serial.print_str(buf, ".");
 		call Serial.print_int(buf, p->id);
@@ -595,19 +651,22 @@ implementation
 
 			case 0xE0:
 				i = instr[0] & 0x0f;
-				dbg("WSNVMM_v", "Tmr: %d\n", instr[1]);
-				//        buf = call Serial.get_buf();
-				call Serial.print_str(buf, "Tmr[");
-				call Serial.print_int(buf, i);
-				call Serial.print_str(buf, "] ");
-				call Serial.print_int(buf, instr[1]);
-				call Serial.print_buf(buf);
-
 				if ( i == 0 ) {
+					dbg("WSNVMM_v", "Tmr[%d]: %d\n",i, instr[1]);
+					//        buf = call Serial.get_buf();
+					call Serial.print_str(buf, "Tmr[");
+					call Serial.print_int(buf, i);
+					call Serial.print_str(buf, "] ");
+					call Serial.print_int(buf, instr[1]);
+					call Serial.print_buf(buf);
+
 					p->timer_set=1;
 					call Timer.startOneShot[active_vm](instr[1]*1000);
+					if ( call Timer.isRunning[active_vm]() == FALSE )
+						exit(0);
+
 				} else {
-					
+
 				}
 				(p->pc)+=2;
 				break;
@@ -616,19 +675,20 @@ implementation
 				i = instr[0] & 0x0f;
 				p->pc = p->pc +1;
 
-
-				call Serial.print_str(buf, "Send[");
+				call Serial.print_str(buf, "Send{");
 				printSignedInt(buf, p->regs[6]);
-				call Serial.print_str(buf, ",");
-				printSignedInt(buf, p->regs[7]);
-				call Serial.print_str(buf, "]");
+				if ( i !=0 ) {
+					call Serial.print_str(buf, ",");
+					printSignedInt(buf, p->regs[7]);
+				}
+				call Serial.print_str(buf, "}");
 				call Serial.print_buf(buf);
 				break;
 		}
 
 		for ( i=1; i<=MaxApps; i++ ) {
 			j = (active_vm+i)%MaxApps;
-			if ( apps[j].is_active == 1 && apps[j].waiting == 0 ) {
+		if ( apps[j].is_active == 1 && apps[j].waiting == 0 ) {
 				if ( apps[j].in_init == 1  || apps[j].timer_active == 1 ) {
 					active_vm = j;
 					post next_instruction();
@@ -636,19 +696,35 @@ implementation
 				}
 			}
 		}
+			j = active_vm;
 		active_vm = MaxApps;
 	}
 
-	default command uint32_t Timer.getNow[int id](){ return 0;}
-	default command void Timer.startOneShot[int id](uint32_t milli){}
+	default command uint32_t Timer.getNow[int id](){
+		dbg("BlinkC", "This should not be executed");
+
+		return 0;
+	}
+
+	default command bool Timer.isRunning[int id]()
+	{
+		dbg("BlinkC", "This should not be executed");
+		return FALSE;
+	
+	}
+
+	default command void Timer.startOneShot[int id](uint32_t milli){
+		dbg("BlinkC", "This should not be executed");
+	}
 
 	event void Timer.fired[int id]()
 	{
-		apps[id].timer_active = 1;
+	dbg("BlinkC", "FIRED %d (%d)\n", id, active_vm);
+	apps[id].timer_active = 1;
 		apps[id].in_init = 0;
 		apps[id].pc = 0;
 
-		dbg("BlinkC", "FIRED %d (%d)\n", id, active_vm);
+		
 		if ( active_vm == MaxApps ) {
 			active_vm = id;
 			post next_instruction();
