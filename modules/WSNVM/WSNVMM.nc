@@ -1,21 +1,33 @@
 module WSNVMM
 {
-	uses interface Timer<TMilli> as Timer[int id];
-	uses interface Leds;
-	uses interface Read<uint16_t>;
-	uses interface WSNSerialC as Serial;
-	uses interface SplitControl as SControl;
-	uses interface WSNBroadcastC as Broadcast;
-	uses interface SplitControl as BroadcastControl;
-	uses interface AMPacket;
+	uses {
+		interface Timer<TMilli> as Timer[int id];
+		interface Leds;
+		interface Read<uint16_t>;
+		interface WSNSerialC as Serial;
+		interface SplitControl as SControl;
+		interface WSNBroadcastC as Broadcast;
+		interface SplitControl as BroadcastControl;
+		interface AMPacket;
+		interface Packet;
 
-	provides interface SplitControl as Control;
-	provides interface WSNVMC as VM;
+		interface SplitControl as NetControl;
+		interface AMSend as NetSend;
+		interface Receive as NetReceive;
+	}
+
+	provides {
+		interface SplitControl as Control;
+		interface WSNVMC as VM;
+	}
 }
 implementation
 {
-	enum {MaxApps=3, MaxRegs=10, CacheLifetime=3000, MaxRoutes=15};
+	enum {MaxApps=3, MaxRegs=10, CacheLifetime=3000, MaxRoutes=15
+				, MaxMsgs=5};
 	enum {NewApp=12};
+
+	enum {HandlerNone=0, HandlerInit=1, HandlerTimer=2, HandlerNet=3};
 
 	typedef struct {
 		uint16_t node;
@@ -30,7 +42,12 @@ implementation
 		nx_uint8_t payload[255];
 	} nx_binary_t;
 
-
+	typedef nx_struct {
+		nx_uint16_t sink;
+		nx_uint8_t  id;
+		nx_int8_t  r[];
+	} nx_msg_t;
+	
 	typedef nx_struct {
 		nx_uint8_t guard;
 		nx_uint8_t id;
@@ -41,10 +58,11 @@ implementation
 		uint16_t sink;
 		uint8_t pc;
 		uint8_t is_active;
-		uint8_t in_init;
+		uint8_t in_handler;
+		uint8_t return_handler;
+		uint8_t return_pc;
 		uint8_t id;
-		uint8_t timer_set;
-		uint8_t timer_active;
+		uint8_t has_net;
 		uint8_t waiting;
 		int8_t regs[MaxRegs];
 		uint8_t init[255];
@@ -52,11 +70,13 @@ implementation
 		uint8_t net[255];
 		uint8_t stopped;
 	} app_t;
+		
+	bool busy = FALSE;
+	message_t  msgs[MaxMsgs];
+	uint8_t msgs_size=0;
+	uint8_t msgs_start=0;
 
 	app_t apps[MaxApps];
-
-	typedef nx_struct {
-	} nx_packed_app_t;
 
 	uint8_t  active_vm = MaxApps;
 	uint16_t cache_value;
@@ -67,15 +87,166 @@ implementation
 	uint8_t routes_start=0, routes_size=0;
 
 
-	error_t bcastControl=EBUSY, serialControl=EBUSY;
+	error_t bcastControl=EBUSY, serialControl=EBUSY, netControl=EBUSY;
 
 	error_t app_set(int slot, nx_binary_t* binary, int id, uint16_t sink);
 	void binary_to_handlers(nx_binary_t *binary, uint8_t* init, 
 			uint8_t *timer, uint8_t *net);
 	task void next_instruction();
 	void request_sense_data(int id);
+	error_t route_get(uint16_t node, uint16_t *hop);
+	void chooseNextVM();
+	task void sendNextMsg();
+	void sendMsg(uint16_t sink, uint8_t id, uint8_t r7, uint8_t r8,
+		uint8_t sendBoth);
+	
 
-	void printSignedInt(uint8_t buf, int8_t i){
+	// Net
+	task void sendNextMsg()
+	{	
+
+		message_t *msg = msgs + msgs_start;
+		
+		if ( msgs_size == 0 )
+			return;
+		if ( busy == TRUE )
+			return;
+
+		busy = TRUE;
+	
+		dbg("BlinkC","sending: %d len:%d\n", call AMPacket.destination(msg),
+				call Packet.payloadLength(msg));
+		if ( call NetSend.send(call AMPacket.destination(msg), msg,
+				call Packet.payloadLength(msg)) == SUCCESS )
+			busy = TRUE;
+		else {
+			busy = FALSE;
+		}
+
+		msgs_start = (msgs_start+1)%MaxMsgs;
+		msgs_size--;
+	}
+		
+	void sendMsg(uint16_t sink, uint8_t id, uint8_t r7, uint8_t r8,
+		uint8_t sendBoth)
+	{
+		nx_msg_t *p;
+		uint16_t hop;
+		uint8_t len;
+		message_t *msg;
+
+
+		if ( route_get(sink, &hop) != SUCCESS )
+			return;
+		
+		msg = msgs+( (msgs_start+msgs_size)%MaxMsgs );
+
+		if ( msgs_size == MaxMsgs )
+			msgs_start = (msgs_start+1)%MaxMsgs;
+		else
+			msgs_size++;
+
+		len = 4 + (sendBoth!=0);
+		p = (nx_msg_t*) call NetSend.getPayload(msg, len);
+
+		p->sink = sink;
+		p->id = id;
+		p->r[0] = r7;
+dbg("BlinkC", "sink:%d hop;%d\n", sink, hop);
+		if ( sendBoth )
+			p->r[1] = r8;
+		
+		call AMPacket.setDestination(msg, hop);
+		call Packet.setPayloadLength(msg, len);
+
+		if ( busy == FALSE )
+			post sendNextMsg();
+	}
+
+	event void NetSend.sendDone(message_t* msg, error_t error)
+	{
+		busy = FALSE;
+		if ( msgs_size )
+			post sendNextMsg();
+	}
+
+	event message_t* NetReceive.receive(message_t* msg, void* payload, 
+			uint8_t len)
+	{
+		uint8_t i;
+		uint8_t buf;
+		uint8_t r8,r9;
+
+		nx_msg_t *m = (nx_msg_t*)payload;
+
+		if ( len < 4 )
+			return msg;
+		
+		buf = call Serial.get_buf();
+		call Serial.print_str(buf, "Msg:len=");
+		call Serial.print_int(buf, len);
+		call Serial.print_str(buf, ",sink=");
+		call Serial.print_int(buf, (uint8_t)m->sink);
+		call Serial.print_str(buf, ",id=");
+		call Serial.print_int(buf, m->id);
+		call Serial.print_str(buf, ",from=");
+		call Serial.print_int(buf, call AMPacket.source(msg));
+		call Serial.print_buf(buf);
+
+		if ( m->sink == call AMPacket.address() ) {
+			for ( i=0; i<MaxApps; ++i ) {
+				if ( apps[i].sink == m->sink 
+						&& apps[i].id == m->id
+						&& apps[i].is_active == 1 
+						&& apps[i].has_net == 1 ) {
+						
+					apps[i].regs[8] = m->r[0];
+					
+					if ( len == 5 )
+						apps[i].regs[9] = m->r[1];
+					apps[i].return_handler = apps[i].in_handler;
+					apps[i].return_pc = apps[i].pc;
+
+					apps[i].pc = 0;
+					apps[i].in_handler = HandlerNet;
+
+					if ( active_vm == MaxApps )
+						active_vm = i;
+					return msg;
+				}
+			}
+		}
+		
+		if ( call AMPacket.address() == m->sink )
+			return msg;
+
+		r8 = m->r[0];
+
+		if ( len == 5 )
+			r9 = m->r[1];
+		sendMsg( 0, m->id, r8, r9, len==5);
+		return msg;
+	}
+
+	void chooseNextVM()
+	{
+		uint8_t i,j;
+
+		for ( i=1; i<=MaxApps; i++ ) {
+			j = (active_vm+i)%MaxApps;
+			if ( apps[j].is_active == 1 && apps[j].waiting == 0 ) {
+				if ( apps[j].in_handler ) {
+					active_vm = j;
+					post next_instruction();
+					return;
+				}
+			}
+		}
+		active_vm = MaxApps;
+	}
+
+	void printSignedInt(uint8_t buf, int8_t i)
+	{
 		if ( i >= 0 ) {
 			call Serial.print_int(buf, i);
 		} else {
@@ -146,10 +317,16 @@ implementation
 	{
 		uint8_t i;
 		for ( i=0; i<MaxApps; ++i ) {
+			apps[i].return_pc = 0;
 			apps[i].is_active = 0;
 			apps[i].stopped = 0;
+			apps[i].has_net = 0;
+			apps[i].in_handler = HandlerNone;
+			apps[i].return_handler = HandlerNone;
 		}
 
+		msgs_size = 0;
+		msgs_start = 0;
 		return call SControl.start() & call BroadcastControl.start();
 	}
 
@@ -158,28 +335,58 @@ implementation
 		return call SControl.stop() & call BroadcastControl.stop();
 	}
 
+	
+	event void NetControl.stopDone(error_t err) {
+		netControl = err;
+		if ( serialControl != EBUSY 
+			&& bcastControl != EBUSY 
+			&& netControl!=EBUSY)
+			signal Control.stopDone(serialControl|bcastControl|netControl);
+	}
+
+	event void NetControl.startDone(error_t err) {
+		netControl = err;
+
+		if ( serialControl != EBUSY 
+			&& bcastControl != EBUSY 
+			&& netControl!=EBUSY)
+			signal Control.startDone(serialControl|bcastControl|netControl);
+	}
+
 	event void BroadcastControl.stopDone(error_t err) {
 		bcastControl = err;
-		if ( serialControl != EBUSY )
-			signal Control.stopDone(serialControl|bcastControl);
+
+		if ( serialControl != EBUSY 
+			&& bcastControl != EBUSY 
+			&& netControl!=EBUSY)
+			signal Control.stopDone(serialControl|bcastControl|netControl);
 	}
 
 	event void BroadcastControl.startDone(error_t err) {
 		bcastControl = err;
-		if ( serialControl != EBUSY )
-			signal Control.startDone(serialControl | bcastControl);
+
+		if ( serialControl != EBUSY 
+			&& bcastControl != EBUSY 
+			&& netControl!=EBUSY)
+			signal Control.startDone(serialControl|bcastControl|netControl);
 	}
 
 	event void SControl.stopDone(error_t err) {
 		serialControl = err;
-		if ( bcastControl != EBUSY )
-			signal Control.stopDone(err|bcastControl);
+
+		if ( serialControl != EBUSY 
+			&& bcastControl != EBUSY 
+			&& netControl!=EBUSY)
+			signal Control.stopDone(serialControl|bcastControl|netControl);
 	}
 
 	event void SControl.startDone(error_t err) {
 		serialControl = err;
-		if ( bcastControl != EBUSY )
-			signal Control.startDone(err | bcastControl);
+
+		if ( serialControl != EBUSY 
+			&& bcastControl != EBUSY 
+			&& netControl!=EBUSY)
+			signal Control.startDone(serialControl|bcastControl|netControl);
 	}
 
 	command error_t VM.propagate_binary(void *binary, uint8_t len,
@@ -197,7 +404,8 @@ implementation
 
 		call VM.upload_binary((nx_uint8_t*)binary, id
 				,call AMPacket.address() );
-		call Broadcast.send(&app, len+2);
+
+		return call Broadcast.send(&app, len+2);
 	}
 
 
@@ -315,10 +523,11 @@ implementation
 		p->is_active = 0;
 		p->pc = 0;
 		p->id = id;
-		p->in_init=1;
-		p->timer_set=0;
-		p->timer_active=0;
+		p->in_handler=HandlerInit;
+		p->return_handler = HandlerNone;
+		p->return_pc = 0;
 		p->waiting = 0;
+		p->has_net = ( binary->length_net > 0 );
 		binary_to_handlers(binary, p->init, p->timer, p->net);
 
 		for ( j=0; j<MaxRegs; ++j )
@@ -336,7 +545,7 @@ implementation
 
 	task void next_instruction()
 	{
-		uint8_t i,j;
+		uint8_t i;
 		uint8_t *instr;
 		uint8_t buf;
 
@@ -345,10 +554,12 @@ implementation
 		if ( active_vm == MaxApps )
 			return;
 
-		if ( p->in_init )
+		if ( p->in_handler==HandlerInit)
 			instr = p->init + p->pc;
-		else
+		else if ( p->in_handler == HandlerTimer )
 			instr = p->timer + p->pc;
+		else
+			instr = p->net + p->pc;
 
 		dbg("WSNVMM", "Executing for %d:%d (%x)\n", 
 				active_vm, p->pc, instr[0] & 0xF0);
@@ -373,20 +584,11 @@ implementation
 				call Serial.print_str(buf, "Ret");
 				call Serial.print_buf(buf);
 
-				if ( p->in_init == 1 ) {
-					dbg("WSNVMM", "Done Init\n");
-					p->in_init = 0;
-					if ( p->timer_set == 0 ) {
-						p->is_active = 0;
-					}
-				} else {
-					dbg("WSNVMM", "Done Timer\n");
-					p->timer_active = 0;
-					if ( p->timer_set == 0 )
-						p->is_active = 0;
-				}
-				break;
+				dbg("WSNVMM", "Done Handler %d\n", p->in_handler);
 
+				p->in_handler = p->return_handler;
+				p->pc = p->return_pc;
+				break;
 			case 0x10:
 				i = instr[0] & 0x0f;
 
@@ -662,7 +864,6 @@ implementation
 					call Serial.print_int(buf, instr[1]);
 					call Serial.print_buf(buf);
 
-					p->timer_set=1;
 					call Timer.startOneShot[active_vm](instr[1]*1000);
 					if ( call Timer.isRunning[active_vm]() == FALSE )
 						exit(0);
@@ -676,6 +877,7 @@ implementation
 			case 0xF0:
 				i = instr[0] & 0x0f;
 				p->pc = p->pc +1;
+				sendMsg(0, p->id,p->regs[6], p->regs[7], i);
 
 				call Serial.print_str(buf, "Send{");
 				printSignedInt(buf, p->regs[6]);
@@ -688,18 +890,7 @@ implementation
 				break;
 		}
 
-		for ( i=1; i<=MaxApps; i++ ) {
-			j = (active_vm+i)%MaxApps;
-		if ( apps[j].is_active == 1 && apps[j].waiting == 0 ) {
-				if ( apps[j].in_init == 1  || apps[j].timer_active == 1 ) {
-					active_vm = j;
-					post next_instruction();
-					return;
-				}
-			}
-		}
-			j = active_vm;
-		active_vm = MaxApps;
+		chooseNextVM();	// choose vm and post next_instruction if necessary
 	}
 
 	default command uint32_t Timer.getNow[int id](){
@@ -712,7 +903,7 @@ implementation
 	{
 		dbg("BlinkC", "This should not be executed");
 		return FALSE;
-	
+
 	}
 
 	default command void Timer.startOneShot[int id](uint32_t milli){
@@ -721,12 +912,11 @@ implementation
 
 	event void Timer.fired[int id]()
 	{
-	dbg("BlinkC", "FIRED %d (%d)\n", id, active_vm);
-	apps[id].timer_active = 1;
-		apps[id].in_init = 0;
+		dbg("BlinkC", "FIRED %d (%d)\n", id, active_vm);
+		apps[id].in_handler = HandlerTimer;
 		apps[id].pc = 0;
 
-		
+
 		if ( active_vm == MaxApps ) {
 			active_vm = id;
 			post next_instruction();
@@ -785,7 +975,7 @@ implementation
 			for ( i=1; i<=MaxApps; i++ ) {
 				j = (active_vm+i)%MaxApps;
 				if ( apps[j].is_active == 1 && apps[j].waiting == 0 ) {
-					if ( apps[j].in_init == 1  || apps[j].timer_active == 1 ) {
+					if ( apps[j].in_handler ) {
 						active_vm = j;
 						return SUCCESS;
 					}
@@ -836,9 +1026,9 @@ implementation
 
 		p->pc = 0;
 		p->id = id;
-		p->in_init=1;
-		p->timer_set=0;
-		p->timer_active=0;
+		p->in_handler=HandlerInit;
+		p->return_handler = HandlerNone;
+		p->return_pc = 0;
 		p->waiting = 0;
 		p->is_active = 1;
 
@@ -850,5 +1040,4 @@ implementation
 		return SUCCESS;
 	}
 }
-
 

@@ -20,7 +20,7 @@ implementation
   uint8_t busy = FALSE;
   uint8_t msgs = 0; 
   uint8_t msgs_start = 0;
-  char msgs_queue[QueueSize][MsgSize];
+  unsigned char msgs_queue[QueueSize][MsgSize];
   message_t packet;
 
   task void printNextMsg();
