@@ -24,7 +24,7 @@ module WSNVMM
 implementation
 {
 	enum {MaxApps=3, MaxRegs=10, CacheLifetime=3000, MaxRoutes=15
-				, MaxMsgs=5};
+		, MaxMsgs=5, MaxHops=3, HopsDelay=1000};
 	enum {NewApp=12};
 
 	enum {HandlerNone=0, HandlerInit=1, HandlerTimer=2, HandlerNet=3};
@@ -47,7 +47,7 @@ implementation
 		nx_uint8_t  id;
 		nx_int8_t  r[];
 	} nx_msg_t;
-	
+
 	typedef nx_struct {
 		nx_uint8_t guard;
 		nx_uint8_t id;
@@ -57,6 +57,7 @@ implementation
 	typedef struct {
 		uint16_t sink;
 		uint8_t pc;
+		uint8_t hops;
 		uint8_t is_active;
 		uint8_t in_handler;
 		uint8_t return_handler;
@@ -70,7 +71,7 @@ implementation
 		uint8_t net[255];
 		uint8_t stopped;
 	} app_t;
-		
+
 	bool busy = FALSE;
 	message_t  msgs[MaxMsgs];
 	uint8_t msgs_size=0;
@@ -89,7 +90,8 @@ implementation
 
 	error_t bcastControl=EBUSY, serialControl=EBUSY, netControl=EBUSY;
 
-	error_t app_set(int slot, nx_binary_t* binary, int id, uint16_t sink);
+	error_t app_set(int slot, nx_binary_t* binary, int id,
+			uint16_t sink, uint8_t hops);
 	void binary_to_handlers(nx_binary_t *binary, uint8_t* init, 
 			uint8_t *timer, uint8_t *net);
 	task void next_instruction();
@@ -98,26 +100,26 @@ implementation
 	void chooseNextVM();
 	task void sendNextMsg();
 	void sendMsg(uint16_t sink, uint8_t id, uint8_t r7, uint8_t r8,
-		uint8_t sendBoth);
-	
+			uint8_t sendBoth);
+
 
 	// Net
 	task void sendNextMsg()
 	{	
 
 		message_t *msg = msgs + msgs_start;
-		
+
 		if ( msgs_size == 0 )
 			return;
 		if ( busy == TRUE )
 			return;
 
 		busy = TRUE;
-	
+
 		dbg("BlinkC","sending: %d len:%d\n", call AMPacket.destination(msg),
 				call Packet.payloadLength(msg));
 		if ( call NetSend.send(call AMPacket.destination(msg), msg,
-				call Packet.payloadLength(msg)) == SUCCESS )
+					call Packet.payloadLength(msg)) == SUCCESS )
 			busy = TRUE;
 		else {
 			busy = FALSE;
@@ -126,9 +128,9 @@ implementation
 		msgs_start = (msgs_start+1)%MaxMsgs;
 		msgs_size--;
 	}
-		
+
 	void sendMsg(uint16_t sink, uint8_t id, uint8_t r7, uint8_t r8,
-		uint8_t sendBoth)
+			uint8_t sendBoth)
 	{
 		nx_msg_t *p;
 		uint16_t hop;
@@ -138,7 +140,7 @@ implementation
 
 		if ( route_get(sink, &hop) != SUCCESS )
 			return;
-		
+
 		msg = msgs+( (msgs_start+msgs_size)%MaxMsgs );
 
 		if ( msgs_size == MaxMsgs )
@@ -152,10 +154,10 @@ implementation
 		p->sink = sink;
 		p->id = id;
 		p->r[0] = r7;
-dbg("BlinkC", "sink:%d hop;%d\n", sink, hop);
+		dbg("BlinkC", "sink:%d hop;%d\n", sink, hop);
 		if ( sendBoth )
 			p->r[1] = r8;
-		
+
 		call AMPacket.setDestination(msg, hop);
 		call Packet.setPayloadLength(msg, len);
 
@@ -181,7 +183,7 @@ dbg("BlinkC", "sink:%d hop;%d\n", sink, hop);
 
 		if ( len < 4 )
 			return msg;
-		
+
 		buf = call Serial.get_buf();
 		call Serial.print_str(buf, "Msg:len=");
 		call Serial.print_int(buf, len);
@@ -193,15 +195,14 @@ dbg("BlinkC", "sink:%d hop;%d\n", sink, hop);
 		call Serial.print_int(buf, call AMPacket.source(msg));
 		call Serial.print_buf(buf);
 
-		if ( m->sink == call AMPacket.address() ) {
+		if ( m->sink != call AMPacket.address() ) {
 			for ( i=0; i<MaxApps; ++i ) {
 				if ( apps[i].sink == m->sink 
 						&& apps[i].id == m->id
 						&& apps[i].is_active == 1 
 						&& apps[i].has_net == 1 ) {
-						
 					apps[i].regs[8] = m->r[0];
-					
+
 					if ( len == 5 )
 						apps[i].regs[9] = m->r[1];
 					apps[i].return_handler = apps[i].in_handler;
@@ -210,13 +211,16 @@ dbg("BlinkC", "sink:%d hop;%d\n", sink, hop);
 					apps[i].pc = 0;
 					apps[i].in_handler = HandlerNet;
 
-					if ( active_vm == MaxApps )
+					if ( active_vm == MaxApps ) {
 						active_vm = i;
+						post next_instruction();
+					}
+
 					return msg;
 				}
 			}
 		}
-		
+
 		if ( call AMPacket.address() == m->sink )
 			return msg;
 
@@ -224,6 +228,7 @@ dbg("BlinkC", "sink:%d hop;%d\n", sink, hop);
 
 		if ( len == 5 )
 			r9 = m->r[1];
+
 		sendMsg( 0, m->id, r8, r9, len==5);
 		return msg;
 	}
@@ -309,7 +314,7 @@ dbg("BlinkC", "sink:%d hop;%d\n", sink, hop);
 			call Serial.print_int(buf, (uint8_t)source);
 			call Serial.print_buf(buf);
 
-			call VM.upload_binary(&(p->binary), p->id, source);
+			call VM.upload_binary(&(p->binary), p->id, source, hops);
 		}
 	}
 
@@ -335,12 +340,12 @@ dbg("BlinkC", "sink:%d hop;%d\n", sink, hop);
 		return call SControl.stop() & call BroadcastControl.stop();
 	}
 
-	
+
 	event void NetControl.stopDone(error_t err) {
 		netControl = err;
 		if ( serialControl != EBUSY 
-			&& bcastControl != EBUSY 
-			&& netControl!=EBUSY)
+				&& bcastControl != EBUSY 
+				&& netControl!=EBUSY)
 			signal Control.stopDone(serialControl|bcastControl|netControl);
 	}
 
@@ -348,8 +353,8 @@ dbg("BlinkC", "sink:%d hop;%d\n", sink, hop);
 		netControl = err;
 
 		if ( serialControl != EBUSY 
-			&& bcastControl != EBUSY 
-			&& netControl!=EBUSY)
+				&& bcastControl != EBUSY 
+				&& netControl!=EBUSY)
 			signal Control.startDone(serialControl|bcastControl|netControl);
 	}
 
@@ -357,8 +362,8 @@ dbg("BlinkC", "sink:%d hop;%d\n", sink, hop);
 		bcastControl = err;
 
 		if ( serialControl != EBUSY 
-			&& bcastControl != EBUSY 
-			&& netControl!=EBUSY)
+				&& bcastControl != EBUSY 
+				&& netControl!=EBUSY)
 			signal Control.stopDone(serialControl|bcastControl|netControl);
 	}
 
@@ -366,8 +371,8 @@ dbg("BlinkC", "sink:%d hop;%d\n", sink, hop);
 		bcastControl = err;
 
 		if ( serialControl != EBUSY 
-			&& bcastControl != EBUSY 
-			&& netControl!=EBUSY)
+				&& bcastControl != EBUSY 
+				&& netControl!=EBUSY)
 			signal Control.startDone(serialControl|bcastControl|netControl);
 	}
 
@@ -375,8 +380,8 @@ dbg("BlinkC", "sink:%d hop;%d\n", sink, hop);
 		serialControl = err;
 
 		if ( serialControl != EBUSY 
-			&& bcastControl != EBUSY 
-			&& netControl!=EBUSY)
+				&& bcastControl != EBUSY 
+				&& netControl!=EBUSY)
 			signal Control.stopDone(serialControl|bcastControl|netControl);
 	}
 
@@ -384,13 +389,13 @@ dbg("BlinkC", "sink:%d hop;%d\n", sink, hop);
 		serialControl = err;
 
 		if ( serialControl != EBUSY 
-			&& bcastControl != EBUSY 
-			&& netControl!=EBUSY)
+				&& bcastControl != EBUSY 
+				&& netControl!=EBUSY)
 			signal Control.startDone(serialControl|bcastControl|netControl);
 	}
 
 	command error_t VM.propagate_binary(void *binary, uint8_t len,
-			uint8_t id)
+			uint8_t id, uint8_t hops)
 	{
 		uint8_t i;
 		nx_new_app_t app;
@@ -403,7 +408,7 @@ dbg("BlinkC", "sink:%d hop;%d\n", sink, hop);
 			app.binary.payload[i] = ((nx_binary_t*)binary)->payload[i];
 
 		call VM.upload_binary((nx_uint8_t*)binary, id
-				,call AMPacket.address() );
+				,call AMPacket.address(), hops);
 
 		return call Broadcast.send(&app, len+2);
 	}
@@ -419,7 +424,7 @@ dbg("BlinkC", "sink:%d hop;%d\n", sink, hop);
 		bin = (nx_binary_t*)((nx_uint8_t*)payload+2);
 
 		if ( action == 0 ) {
-			call VM.propagate_binary(bin, len, id);
+			call VM.propagate_binary(bin, len, id, 0);
 		} else if ( action == 1 )
 			call VM.stop_application(id);
 		else if ( action == 2 )
@@ -508,7 +513,8 @@ dbg("BlinkC", "sink:%d hop;%d\n", sink, hop);
 		dbg("WSNVMM", "Done loading\n");
 	}
 
-	error_t app_set(int slot, nx_binary_t* binary, int id, uint16_t sink)
+	error_t app_set(int slot, nx_binary_t* binary, int id, uint16_t sink,
+			uint8_t hops)
 	{
 		app_t *p = apps + slot;
 		uint8_t j;
@@ -522,6 +528,7 @@ dbg("BlinkC", "sink:%d hop;%d\n", sink, hop);
 		p->sink = sink;
 		p->is_active = 0;
 		p->pc = 0;
+		p->hops = hops;
 		p->id = id;
 		p->in_handler=HandlerInit;
 		p->return_handler = HandlerNone;
@@ -855,8 +862,9 @@ dbg("BlinkC", "sink:%d hop;%d\n", sink, hop);
 
 			case 0xE0:
 				i = instr[0] & 0x0f;
+				dbg("WSNVMM_v", "Tmr[%d]: %d\n",i, instr[1]);
+
 				if ( i == 0 ) {
-					dbg("WSNVMM_v", "Tmr[%d]: %d\n",i, instr[1]);
 					//        buf = call Serial.get_buf();
 					call Serial.print_str(buf, "Tmr[");
 					call Serial.print_int(buf, i);
@@ -865,11 +873,22 @@ dbg("BlinkC", "sink:%d hop;%d\n", sink, hop);
 					call Serial.print_buf(buf);
 
 					call Timer.startOneShot[active_vm](instr[1]*1000);
-					if ( call Timer.isRunning[active_vm]() == FALSE )
-						exit(0);
-
 				} else {
+					uint32_t delay;
 
+					if ( MaxHops > p->hops )
+						delay = (MaxHops-p->hops)*HopsDelay;
+					else
+						delay = 3*HopsDelay;
+
+					dbg("BlinkC", "Extra delay: %d\n", delay);
+					call Serial.print_str(buf, "Tmr[");
+					call Serial.print_int(buf, i);
+					call Serial.print_str(buf, "] ");
+					call Serial.print_int(buf, instr[1]);
+					call Serial.print_buf(buf);
+
+					call Timer.startOneShot[active_vm](instr[1]*1000 + delay);
 				}
 				(p->pc)+=2;
 				break;
@@ -923,7 +942,8 @@ dbg("BlinkC", "sink:%d hop;%d\n", sink, hop);
 		}
 	}
 
-	command error_t VM.upload_binary(void *binary, uint8_t id, uint16_t sink)
+	command error_t VM.upload_binary(void *binary, uint8_t id, 
+			uint16_t sink, uint8_t hops)
 	{
 		uint8_t i, slot;
 
@@ -932,14 +952,14 @@ dbg("BlinkC", "sink:%d hop;%d\n", sink, hop);
 		for ( i=0; i<MaxApps; i++ )
 			if ( apps[i].is_active && apps[i].id == id ) {
 				apps[i].is_active = 0;
-				return app_set(i, (nx_binary_t*)binary, id, sink);
+				return app_set(i, (nx_binary_t*)binary, id, sink, hops);
 			} else if ( apps[i].is_active == 0 )
 				slot = i;
 
 		if ( slot == MaxApps )
 			return ENOMEM;
 
-		return app_set(slot, (nx_binary_t*)binary, id, sink);
+		return app_set(slot, (nx_binary_t*)binary, id, sink, hops);
 	}
 
 	command error_t VM.stop_application(uint8_t id)
