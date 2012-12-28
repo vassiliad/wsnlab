@@ -6,7 +6,8 @@ module WSNVMM
 		interface Read<uint16_t>;
 		interface WSNSerialC as Serial;
 		interface SplitControl as SControl;
-		interface WSNBroadcastC as Broadcast;
+		interface WSNBroadcastC as Propagate;
+		interface WSNBroadcastC as BcastStop;
 		interface SplitControl as BroadcastControl;
 		interface AMPacket;
 		interface Packet;
@@ -24,7 +25,7 @@ module WSNVMM
 implementation
 {
 	enum {MaxApps=3, MaxRegs=10, CacheLifetime=3000, MaxRoutes=15
-		, MaxMsgs=5, MaxHops=3, HopsDelay=1000};
+		, MaxMsgs=5, MaxHops=3, HopsDelay=4000};
 	enum {NewApp=12};
 
 	enum {HandlerNone=0, HandlerInit=1, HandlerTimer=2, HandlerNet=3};
@@ -33,6 +34,11 @@ implementation
 		uint16_t node;
 		uint16_t hop;
 	} route_t;
+
+	typedef nx_struct {
+		nx_uint16_t sink;
+		nx_uint8_t  id;
+	} nx_stop_app_t;
 
 	typedef nx_struct {
 		nx_uint8_t length;
@@ -101,22 +107,68 @@ implementation
 	task void sendNextMsg();
 	void sendMsg(uint16_t sink, uint8_t id, uint8_t r7, uint8_t r8,
 			uint8_t sendBoth);
+	error_t stopApp(uint16_t sink, uint8_t id);
 
+	error_t stopApp(uint16_t sink, uint8_t id)
+	{
+		uint8_t i, j;
+
+		for ( i=0; i<MaxApps; i++ ) {
+			if ( apps[i].is_active && apps[i].id == id && apps[i].sink==sink) {
+				apps[i].is_active = 0;
+				apps[i].in_handler = HandlerNone;
+				apps[i].stopped = 1;
+				call Timer.stop[i]();
+				break;
+			}
+		}
+
+		if ( i == MaxApps )
+			return FAIL;
+
+		switch ( id ) {
+			case 0:
+				call Leds.led0Off();
+				break;
+
+			case 1:
+				call Leds.led1Off();
+				break;
+
+			case 2:
+				call Leds.led2Off();
+				break;
+		}
+
+		if ( active_vm == i )
+			for ( i=1; i<=MaxApps; i++ ) {
+				j = (active_vm+i)%MaxApps;
+				if ( apps[j].is_active == 1 && apps[j].waiting == 0 ) {
+					if ( apps[j].in_handler ) {
+						active_vm = j;
+						return SUCCESS;
+					}
+				}
+			}
+
+		active_vm = MaxApps;
+		return SUCCESS;
+	}
 
 	// Net
 	task void sendNextMsg()
 	{	
-
 		message_t *msg = msgs + msgs_start;
 
 		if ( msgs_size == 0 )
 			return;
+
 		if ( busy == TRUE )
 			return;
 
 		busy = TRUE;
 
-		dbg("BlinkC","sending: %d len:%d\n", call AMPacket.destination(msg),
+		dbg("BlinkC","sending to: %d len:%d\n", call AMPacket.destination(msg),
 				call Packet.payloadLength(msg));
 		if ( call NetSend.send(call AMPacket.destination(msg), msg,
 					call Packet.payloadLength(msg)) == SUCCESS )
@@ -137,9 +189,13 @@ implementation
 		uint8_t len;
 		message_t *msg;
 
-
-		if ( route_get(sink, &hop) != SUCCESS )
+		if ( sink == call AMPacket.address() )
 			return;
+
+		if ( route_get(sink, &hop) != SUCCESS ) {
+			exit(0);
+			return;
+		}
 
 		msg = msgs+( (msgs_start+msgs_size)%MaxMsgs );
 
@@ -154,7 +210,7 @@ implementation
 		p->sink = sink;
 		p->id = id;
 		p->r[0] = r7;
-		dbg("BlinkC", "sink:%d hop;%d\n", sink, hop);
+
 		if ( sendBoth )
 			p->r[1] = r8;
 
@@ -181,9 +237,6 @@ implementation
 
 		nx_msg_t *m = (nx_msg_t*)payload;
 
-		if ( len < 4 )
-			return msg;
-
 		buf = call Serial.get_buf();
 		call Serial.print_str(buf, "Msg:len=");
 		call Serial.print_int(buf, len);
@@ -195,12 +248,26 @@ implementation
 		call Serial.print_int(buf, call AMPacket.source(msg));
 		call Serial.print_buf(buf);
 
+		if ( len < 4 )
+			return msg;
+
 		if ( m->sink != call AMPacket.address() ) {
 			for ( i=0; i<MaxApps; ++i ) {
 				if ( apps[i].sink == m->sink 
 						&& apps[i].id == m->id
-						&& apps[i].is_active == 1 
-						&& apps[i].has_net == 1 ) {
+						&& apps[i].is_active == 1 ) {
+
+					if ( apps[i].stopped ) {	// drop the packet 
+						nx_stop_app_t s;
+						s.sink = m->sink;
+						s.id   = m->id;
+						call BcastStop.sendHops(&s, sizeof(s), 1);
+						return msg;
+					}
+
+					if ( apps[i].has_net == 0 )
+						break;
+
 					apps[i].regs[8] = m->r[0];
 
 					if ( len == 5 )
@@ -221,6 +288,9 @@ implementation
 			}
 		}
 
+		if ( i == MaxApps )	// the application was not running on the mote
+			return msg;
+
 		if ( call AMPacket.address() == m->sink )
 			return msg;
 
@@ -229,7 +299,7 @@ implementation
 		if ( len == 5 )
 			r9 = m->r[1];
 
-		sendMsg( 0, m->id, r8, r9, len==5);
+		sendMsg( m->sink, m->id, r8, r9, len==5);
 		return msg;
 	}
 
@@ -290,7 +360,21 @@ implementation
 		return FAIL;
 	}
 
-	event void Broadcast.receive(nx_uint8_t *data, uint8_t len,
+	event void BcastStop.receive(nx_uint8_t *data, uint8_t len,
+			uint16_t source, uint16_t last_hop, uint8_t hops)
+	{
+		nx_stop_app_t *p;
+
+		if ( len != sizeof(nx_stop_app_t) )
+			return;
+
+		p = ( nx_stop_app_t*) data;
+
+
+		call VM.stop_application(p->sink, p->id);
+	}
+
+	event void Propagate.receive(nx_uint8_t *data, uint8_t len,
 			uint16_t source, uint16_t last_hop, uint8_t hops)
 	{
 		nx_new_app_t *p = ( nx_new_app_t*) data;
@@ -410,7 +494,7 @@ implementation
 		call VM.upload_binary((nx_uint8_t*)binary, id
 				,call AMPacket.address(), hops);
 
-		return call Broadcast.send(&app, len+2);
+		return call Propagate.send(&app, len+2);
 	}
 
 
@@ -426,7 +510,7 @@ implementation
 		if ( action == 0 ) {
 			call VM.propagate_binary(bin, len, id, 0);
 		} else if ( action == 1 )
-			call VM.stop_application(id);
+			call VM.stop_application(call AMPacket.address(), id);
 		else if ( action == 2 )
 			call VM.start_application(id);
 	}
@@ -881,7 +965,6 @@ implementation
 					else
 						delay = 3*HopsDelay;
 
-					dbg("BlinkC", "Extra delay: %d\n", delay);
 					call Serial.print_str(buf, "Tmr[");
 					call Serial.print_int(buf, i);
 					call Serial.print_str(buf, "] ");
@@ -896,7 +979,6 @@ implementation
 			case 0xF0:
 				i = instr[0] & 0x0f;
 				p->pc = p->pc +1;
-				sendMsg(0, p->id,p->regs[6], p->regs[7], i);
 
 				call Serial.print_str(buf, "Send{");
 				printSignedInt(buf, p->regs[6]);
@@ -906,6 +988,8 @@ implementation
 				}
 				call Serial.print_str(buf, "}");
 				call Serial.print_buf(buf);
+
+				sendMsg(p->sink, p->id,p->regs[6], p->regs[7], i);
 				break;
 		}
 
@@ -918,11 +1002,14 @@ implementation
 		return 0;
 	}
 
+	default command void Timer.stop[int id]()
+	{
+		dbg("BlinkC", "This should not be executed");
+	}
 	default command bool Timer.isRunning[int id]()
 	{
 		dbg("BlinkC", "This should not be executed");
 		return FALSE;
-
 	}
 
 	default command void Timer.startOneShot[int id](uint32_t milli){
@@ -932,6 +1019,9 @@ implementation
 	event void Timer.fired[int id]()
 	{
 		dbg("BlinkC", "FIRED %d (%d)\n", id, active_vm);
+		if ( apps[id].is_active == 0 )
+			return;
+
 		apps[id].in_handler = HandlerTimer;
 		apps[id].pc = 0;
 
@@ -962,49 +1052,14 @@ implementation
 		return app_set(slot, (nx_binary_t*)binary, id, sink, hops);
 	}
 
-	command error_t VM.stop_application(uint8_t id)
+	command error_t VM.stop_application(uint16_t sink, uint8_t id)
 	{
-		uint8_t i, j;
+		nx_stop_app_t p;
+		p.sink = sink;
+		p.id = id;
 
-		for ( i=0; i<MaxApps; i++ ) {
-			if ( apps[i].is_active && apps[i].id == id ) {
-				apps[i].is_active = 0;
-				apps[i].stopped = 1;
-				break;
-			}
-		}
-
-		if ( i == MaxApps )
-			return FAIL;
-
-		switch ( id ) {
-			case 0:
-				call Leds.led0Off();
-				break;
-
-			case 1:
-				call Leds.led1Off();
-				break;
-
-			case 2:
-				call Leds.led2Off();
-				break;
-		}
-
-		if ( active_vm == i )
-			for ( i=1; i<=MaxApps; i++ ) {
-				j = (active_vm+i)%MaxApps;
-				if ( apps[j].is_active == 1 && apps[j].waiting == 0 ) {
-					if ( apps[j].in_handler ) {
-						active_vm = j;
-						return SUCCESS;
-					}
-				}
-			}
-
-		active_vm = MaxApps;
-
-		return SUCCESS;
+		call BcastStop.send(&p, sizeof(p));
+		return stopApp(sink, id);
 	}
 
 	command error_t VM.start_application(uint8_t id)

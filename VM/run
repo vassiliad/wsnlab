@@ -32,6 +32,7 @@ for line in f:
 	s = line.split()
 	if s:
 #		print " ", s[0], " ", s[1], " ", s[2];
+		r.add(int(s[1]), int(s[0]), 0.0)
 		r.add(int(s[0]), int(s[1]), 0.0)
 		if int(s[0]) not in nodes:
 			nodes.add(int(s[0]))

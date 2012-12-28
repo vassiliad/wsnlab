@@ -44,7 +44,10 @@ implementation
 {
   components MainC, LedsC, BlinkC;
   components WSNVM as VM;
-  
+	components new TimerMilliC() as Timer;
+
+
+  BlinkC.Timer -> Timer;
   BlinkC -> MainC.Boot;
   BlinkC.Leds -> LedsC;
   BlinkC.Control -> VM;

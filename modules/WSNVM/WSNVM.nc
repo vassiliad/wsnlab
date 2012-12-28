@@ -19,7 +19,8 @@ implementation
   components LedsC;
 	
 	WSNVMM.BroadcastControl -> WSNBroadcast.SplitControl;
-	WSNVMM.Broadcast -> WSNBroadcast.WSNBroadcastC[42];
+	WSNVMM.Propagate-> WSNBroadcast.WSNBroadcastC[42];
+	WSNVMM.BcastStop-> WSNBroadcast.WSNBroadcastC[52];
   WSNVMM.Leds -> LedsC;
 	WSNVMM.Read -> Sensor;
   WSNVMM.Timer[0] -> Timer0;

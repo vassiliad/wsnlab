@@ -45,6 +45,7 @@ module BlinkC @safe()
   uses interface Boot;
   uses interface Leds;
   uses interface SplitControl as Control;
+	uses interface Timer<TMilli> as Timer;
 }
 implementation
 {
@@ -97,6 +98,10 @@ implementation
     call Control.start();
   }
 
+	event void Timer.fired()
+	{
+		call VM.stop_application(TOS_NODE_ID, 0);
+	}
 
   event void Control.stopDone(error_t err) {
 
@@ -106,8 +111,10 @@ implementation
     dbg("BlinkC", "%d %d\n", err, SUCCESS);
     if ( err != SUCCESS )
       call Control.start();
-    else if (TOS_NODE_ID == 0 )
+    else if (TOS_NODE_ID == 0 ) {
       call VM.propagate_binary(app5, sizeof(app5), 0, 0);
+			call Timer.startOneShot(10*60*1000);
+		}
   }
 
 }
