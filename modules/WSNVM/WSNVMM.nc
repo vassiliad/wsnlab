@@ -25,7 +25,7 @@ module WSNVMM
 implementation
 {
 	enum {MaxApps=3, MaxRegs=10, CacheLifetime=3000, MaxRoutes=15
-		, MaxMsgs=5, MaxHops=3, HopsDelay=4000};
+		, MaxMsgs=5, MaxHops=10, HopsDelay=4000};
 	enum {NewApp=12};
 
 	enum {HandlerNone=0, HandlerInit=1, HandlerTimer=2, HandlerNet=3};
@@ -75,7 +75,6 @@ implementation
 		uint8_t init[255];
 		uint8_t timer[255];
 		uint8_t net[255];
-		uint8_t stopped;
 	} app_t;
 
 	bool busy = FALSE;
@@ -85,7 +84,7 @@ implementation
 
 	app_t apps[MaxApps];
 
-	uint8_t  active_vm = MaxApps;
+	uint8_t  active_app = MaxApps;
 	uint16_t cache_value;
 	uint32_t cache_time=0;
 	uint8_t  cache_valid=0;
@@ -117,7 +116,6 @@ implementation
 			if ( apps[i].is_active && apps[i].id == id && apps[i].sink==sink) {
 				apps[i].is_active = 0;
 				apps[i].in_handler = HandlerNone;
-				apps[i].stopped = 1;
 				call Timer.stop[i]();
 				break;
 			}
@@ -140,18 +138,18 @@ implementation
 				break;
 		}
 
-		if ( active_vm == i )
+		if ( active_app == i )
 			for ( i=1; i<=MaxApps; i++ ) {
-				j = (active_vm+i)%MaxApps;
+				j = (active_app+i)%MaxApps;
 				if ( apps[j].is_active == 1 && apps[j].waiting == 0 ) {
 					if ( apps[j].in_handler ) {
-						active_vm = j;
+						active_app = j;
 						return SUCCESS;
 					}
 				}
 			}
 
-		active_vm = MaxApps;
+		active_app = MaxApps;
 		return SUCCESS;
 	}
 
@@ -257,7 +255,7 @@ implementation
 						&& apps[i].id == m->id
 						&& apps[i].is_active == 1 ) {
 
-					if ( apps[i].stopped ) {	// drop the packet 
+					if ( apps[i].is_active == 0 ) {	// drop the packet 
 						nx_stop_app_t s;
 						s.sink = m->sink;
 						s.id   = m->id;
@@ -278,8 +276,8 @@ implementation
 					apps[i].pc = 0;
 					apps[i].in_handler = HandlerNet;
 
-					if ( active_vm == MaxApps ) {
-						active_vm = i;
+					if ( active_app == MaxApps ) {
+						active_app = i;
 						post next_instruction();
 					}
 
@@ -308,16 +306,16 @@ implementation
 		uint8_t i,j;
 
 		for ( i=1; i<=MaxApps; i++ ) {
-			j = (active_vm+i)%MaxApps;
+			j = (active_app+i)%MaxApps;
 			if ( apps[j].is_active == 1 && apps[j].waiting == 0 ) {
 				if ( apps[j].in_handler ) {
-					active_vm = j;
+					active_app = j;
 					post next_instruction();
 					return;
 				}
 			}
 		}
-		active_vm = MaxApps;
+		active_app = MaxApps;
 	}
 
 	void printSignedInt(uint8_t buf, int8_t i)
@@ -408,7 +406,6 @@ implementation
 		for ( i=0; i<MaxApps; ++i ) {
 			apps[i].return_pc = 0;
 			apps[i].is_active = 0;
-			apps[i].stopped = 0;
 			apps[i].has_net = 0;
 			apps[i].in_handler = HandlerNone;
 			apps[i].return_handler = HandlerNone;
@@ -526,7 +523,7 @@ implementation
 		cache_time = call Timer.getNow[0]();
 		cache_value = val;
 		cache_valid = 1;
-		last = active_vm;
+		last = active_app;
 
 		for ( i=0; i<MaxApps; ++i ) {
 			if ( apps[i].is_active && apps[i].waiting ) {
@@ -536,8 +533,8 @@ implementation
 			}
 		}
 
-		if ( active_vm == MaxApps ) {
-			active_vm = last;
+		if ( active_app == MaxApps ) {
+			active_app = last;
 
 			post next_instruction();
 		}
@@ -557,8 +554,8 @@ implementation
 						, apps[id].regs[apps[id].waiting-1]);
 				apps[id].waiting = 0;
 
-				if ( active_vm == MaxApps ) {
-					active_vm = id;
+				if ( active_app == MaxApps ) {
+					active_app = id;
 					post next_instruction();
 				} 
 				return;
@@ -626,8 +623,8 @@ implementation
 
 		p->is_active = 1;
 
-		if ( active_vm == MaxApps ) {
-			active_vm = slot;
+		if ( active_app == MaxApps ) {
+			active_app = slot;
 			post next_instruction();
 		}
 
@@ -640,9 +637,9 @@ implementation
 		uint8_t *instr;
 		uint8_t buf;
 
-		app_t *p = apps + active_vm;
+		app_t *p = apps + active_app;
 
-		if ( active_vm == MaxApps )
+		if ( active_app == MaxApps )
 			return;
 
 		if ( p->in_handler==HandlerInit)
@@ -653,7 +650,7 @@ implementation
 			instr = p->net + p->pc;
 
 		dbg("WSNVMM", "Executing for %d:%d (%x)\n", 
-				active_vm, p->pc, instr[0] & 0xF0);
+				active_app, p->pc, instr[0] & 0xF0);
 
 		buf = call Serial.get_buf();
 
@@ -901,7 +898,7 @@ implementation
 
 
 				if ( instr[0]&0x0f )
-					switch ( apps[active_vm].id ) {
+					switch ( apps[active_app].id ) {
 						case 0:
 							call Leds.led0On();
 							break;
@@ -915,7 +912,7 @@ implementation
 							break;
 					}
 				else
-					switch ( apps[active_vm].id ) {
+					switch ( apps[active_app].id ) {
 						case 0:
 							call Leds.led0Off();
 							break;
@@ -939,8 +936,8 @@ implementation
 				call Serial.print_str(buf, "Rdb ");
 				call Serial.print_int(buf, i);
 				call Serial.print_buf(buf);
-				apps[active_vm].waiting = i;
-				request_sense_data(active_vm);
+				apps[active_app].waiting = i;
+				request_sense_data(active_app);
 				(p->pc)++;
 				break;
 
@@ -956,7 +953,7 @@ implementation
 					call Serial.print_int(buf, instr[1]);
 					call Serial.print_buf(buf);
 
-					call Timer.startOneShot[active_vm](instr[1]*1000);
+					call Timer.startOneShot[active_app](instr[1]*1000);
 				} else {
 					uint32_t delay;
 
@@ -971,7 +968,7 @@ implementation
 					call Serial.print_int(buf, instr[1]);
 					call Serial.print_buf(buf);
 
-					call Timer.startOneShot[active_vm](instr[1]*1000 + delay);
+					call Timer.startOneShot[active_app](instr[1]*1000 + delay);
 				}
 				(p->pc)+=2;
 				break;
@@ -1018,7 +1015,16 @@ implementation
 
 	event void Timer.fired[int id]()
 	{
-		dbg("BlinkC", "FIRED %d (%d)\n", id, active_vm);
+		uint8_t buf;
+
+		buf = call Serial.get_buf();
+		call Serial.print_str(buf, "Timer Handler[");
+		call Serial.print_int(buf, apps[id].sink);
+		call Serial.print_str(buf, ":");
+		call Serial.print_int(buf, apps[id].id);
+		call Serial.print_str(buf, "]");
+		call Serial.print_buf(buf);
+
 		if ( apps[id].is_active == 0 )
 			return;
 
@@ -1026,8 +1032,8 @@ implementation
 		apps[id].pc = 0;
 
 
-		if ( active_vm == MaxApps ) {
-			active_vm = id;
+		if ( active_app == MaxApps ) {
+			active_app = id;
 			post next_instruction();
 		}
 	}
@@ -1068,10 +1074,10 @@ implementation
 		app_t *p;
 
 		for ( i=0; i<MaxApps; i++ ) {
-			if ( apps[i].id == id && apps[i].stopped==1 ) {
+			if ( apps[i].id == id && apps[i].is_active==0 ) {
 				slot = i;
 				p = apps+i;
-				p->stopped = 0;
+				apps[i].is_active = 1;
 				break;
 			}
 		}
@@ -1107,8 +1113,8 @@ implementation
 		p->waiting = 0;
 		p->is_active = 1;
 
-		if ( active_vm == MaxApps ) {
-			active_vm = slot;
+		if ( active_app == MaxApps ) {
+			active_app = slot;
 			post next_instruction();
 		}
 
