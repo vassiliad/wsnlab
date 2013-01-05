@@ -578,6 +578,8 @@ implementation
 		dbg("WSNVMM", "timer_net:  %d\n", binary->length_net);
 
 		p = ( (nx_uint8_t*) binary ) + 4;
+		
+		init[0] = net[0] = timer[0] = 0x0000;
 
 		dbg("WSNVMM", "Init:\n");
 		for ( i=0; i<binary->length_init; ++i, ++p ) 
